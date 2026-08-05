@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+:root {
+  --background: #faf9f6;
+  --ink: #141414;
+  /* Brand accent — change only here */
+  --accent: #2bacfc;
+  --accent-soft: color-mix(in srgb, var(--accent) 18%, #ffffff);
+  --danger: #b42318;
+  --border: #141414;
+  /*
+   * #2bacfc + white ≈ 2.5:1 — fails WCAG AA.
+   * Button fills keep the bright accent; label uses near-black.
+   */
+  --on-accent: var(--ink);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-ink: var(--ink);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-danger: var(--danger);
+  --color-border: var(--border);
+  --font-heading: var(--font-fredoka);
+  --font-mono: var(--font-plex-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--ink);
+  font-family: var(--font-fredoka), system-ui, sans-serif;
+}
+
+.font-heading {
+  font-family: var(--font-fredoka), system-ui, sans-serif;
+}
+
+.font-mono {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+.stamp-card {
+  background: #fff;
+  border: 2.5px solid var(--border);
+  border-radius: 1.15rem;
+  box-shadow: 6px 6px 0 var(--accent);
+}
+
+.stamp-input {
+  width: 100%;
+  border: 2px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--background);
+  padding: 0.7rem 0.85rem;
+  color: var(--ink);
+  outline: none;
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.stamp-input::placeholder {
+  color: color-mix(in srgb, var(--ink) 35%, transparent);
+}
+
+.stamp-input:focus {
+  border-color: var(--accent);
+  box-shadow: 3px 3px 0 var(--accent);
+}
+
+.stamp-input[aria-invalid="true"] {
+  border-color: var(--danger);
+  box-shadow: 3px 3px 0 var(--danger);
+}
+
+.stamp-button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--accent);
+  padding: 0.85rem 1rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--on-accent);
+  box-shadow: 4px 4px 0 var(--border);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.stamp-button:hover:not(:disabled) {
+  transform: translate(-1px, -1px) rotate(-1deg);
+  box-shadow: 5px 5px 0 var(--border);
+}
+
+.stamp-button:active:not(:disabled) {
+  transform: translate(2px, 2px) rotate(-1deg);
+  box-shadow: 2px 2px 0 var(--border);
+}
+
+.stamp-badge {
+  border: 2px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
