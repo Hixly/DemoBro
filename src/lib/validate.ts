@@ -1,5 +1,21 @@
 const GITHUB_REPO_RE =
-  /^https?:\/\/(www\.)?github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/?$/;
+  /^https?:\/\/(www\.)?github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/?(\.git)?$/;
+
+export function parseGithubOwnerRepo(
+  value: string,
+): { owner: string; repo: string } | null {
+  const trimmed = value.trim().replace(/\.git$/, "");
+  if (!GITHUB_REPO_RE.test(trimmed)) return null;
+
+  try {
+    const url = new URL(trimmed);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return { owner: parts[0], repo: parts[1] };
+  } catch {
+    return null;
+  }
+}
 
 export type FieldError = string | null;
 
