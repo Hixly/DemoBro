@@ -139,7 +139,9 @@ async function main() {
     outputPath: finishedPath,
   });
   console.log(
-    `[checkpoint6] rendered ${renderResult.durationSec.toFixed(1)}s → ${finishedPath}`,
+    `[checkpoint6] rendered ${renderResult.durationSec.toFixed(1)}s → ${finishedPath}` +
+      ` (source ${renderResult.sourceFps?.toFixed?.(1) ?? "?"}fps` +
+      `, interpolate=${renderResult.interpolate})`,
   );
 
   const objectPath = `${jobId}/demo.mp4`;

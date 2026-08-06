@@ -38,21 +38,12 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-async function probeDuration(file) {
-  const out = await new Promise((resolve, reject) => {
-    const child = spawn(
-      "ffprobe",
-      [
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        file,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
-    );
+function ffprobe(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ffprobe", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => {
@@ -67,9 +58,44 @@ async function probeDuration(file) {
       else reject(new Error(`ffprobe failed: ${stderr}`));
     });
   });
+}
+
+async function probeDuration(file) {
+  const out = await ffprobe([
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    file,
+  ]);
   const n = Number(out);
   if (!Number.isFinite(n) || n <= 0) throw new Error(`Bad duration for ${file}`);
   return n;
+}
+
+/** Parse ffprobe avg_frame_rate like "25/1" → 25. */
+async function probeFps(file) {
+  const out = await ffprobe([
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=avg_frame_rate,r_frame_rate",
+    "-of",
+    "default=noprint_wrappers=1",
+    file,
+  ]);
+  const avg = out.match(/avg_frame_rate=([0-9]+)\/([0-9]+)/);
+  const r = out.match(/r_frame_rate=([0-9]+)\/([0-9]+)/);
+  const pick = avg ?? r;
+  if (!pick) return null;
+  const den = Number(pick[2]);
+  if (!den) return null;
+  const fps = Number(pick[1]) / den;
+  return Number.isFinite(fps) && fps > 0 ? fps : null;
 }
 
 /**
@@ -131,10 +157,18 @@ async function pngToFadedClip(pngPath, outPath, durationSec) {
   ]);
 }
 
-async function extractSegment(rawPath, seg, outPath, speed = 1) {
+/**
+ * Extract a footage window to a true 30fps H.264 clip.
+ * When source is under ~30fps (Playwright ~25), minterpolate synthesizes
+ * in-between frames instead of duplicating via -r 30.
+ */
+async function extractSegment(rawPath, seg, outPath, speed = 1, interpolate = false) {
   const dur = Math.max(0.2, seg.end - seg.start);
   const outDur = dur / speed;
   const fadeOutStart = Math.max(0, outDur - 0.25);
+  const fpsStage = interpolate
+    ? "minterpolate=fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
+    : "fps=30";
   await run("ffmpeg", [
     "-y",
     "-ss",
@@ -144,7 +178,14 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
     "-t",
     dur.toFixed(3),
     "-vf",
-    `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setpts=PTS/${speed},fade=t=in:st=0:d=0.25,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25`,
+    [
+      `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
+      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2`,
+      `setpts=PTS/${speed}`,
+      fpsStage,
+      `fade=t=in:st=0:d=0.25`,
+      `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25`,
+    ].join(","),
     "-an",
     "-c:v",
     "libx264",
@@ -152,6 +193,8 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
     "yuv420p",
     "-r",
     "30",
+    "-fps_mode",
+    "cfr",
     outPath,
   ]);
 }
@@ -193,6 +236,8 @@ async function concatWithXfade(inputs, outPath) {
     "yuv420p",
     "-r",
     "30",
+    "-fps_mode",
+    "cfr",
     "-movflags",
     "+faststart",
     outPath,
@@ -238,6 +283,9 @@ export async function renderDemo(opts) {
   try {
     const logoPath = await resolveLogoPath(opts.logoPath);
     const total = await probeDuration(opts.rawVideoPath);
+    const sourceFps = (await probeFps(opts.rawVideoPath)) ?? 25;
+    // Playwright Chromium recordVideo is ~25fps; -r 30 alone only dupes frames.
+    const interpolate = sourceFps < 29.5;
     const segments = planSegments(opts.timeline, total);
 
     const contentSecs = segments.reduce((acc, s) => acc + (s.end - s.start), 0);
@@ -250,6 +298,10 @@ export async function renderDemo(opts) {
       speed = contentSecs / budget;
       speed = Math.min(2.0, Math.max(1, speed));
     }
+
+    console.log(
+      `[render] source=${sourceFps.toFixed(2)}fps interpolate=${interpolate} speed=${speed.toFixed(2)}`,
+    );
 
     const titlePng = path.join(tmp, "title.png");
     const outroPng = path.join(tmp, "outro.png");
@@ -280,7 +332,13 @@ export async function renderDemo(opts) {
     const clipPaths = [];
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
-      await extractSegment(opts.rawVideoPath, segments[i], clip, speed);
+      await extractSegment(
+        opts.rawVideoPath,
+        segments[i],
+        clip,
+        speed,
+        interpolate,
+      );
       clipPaths.push(clip);
     }
 
@@ -293,6 +351,7 @@ export async function renderDemo(opts) {
         { start: 0, end: Math.min(total, 20) },
         bodyPath,
         1,
+        interpolate,
       );
     }
 
@@ -306,6 +365,8 @@ export async function renderDemo(opts) {
       segments: segments.length,
       speed,
       logoPath,
+      sourceFps,
+      interpolate,
     };
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
