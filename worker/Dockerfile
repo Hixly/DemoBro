@@ -15,6 +15,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY src ./src
+COPY assets ./assets
 
 USER pwuser
 

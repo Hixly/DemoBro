@@ -8,7 +8,7 @@ export default function Home() {
       </h1>
 
       <div className="stamp-badge absolute right-5 top-10 rotate-8 font-heading sm:right-12 sm:top-14">
-        60s · no recording
+        ~30s · no recording
       </div>
 
       <section className="stamp-card relative z-10 w-full max-w-[26rem] translate-x-2 rotate-[2.5deg] p-6 sm:translate-x-3 sm:p-7">

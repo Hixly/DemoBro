@@ -47,3 +47,8 @@ next-env.d.ts
 # worker recordings (raw Playwright video)
 worker/output/
 worker/node_modules/
+
+**/node_modules/
+worker/output/
+*.mp4
+*.webm

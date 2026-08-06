@@ -10,7 +10,7 @@ const SETTLE_MS = 1_200;
 
 /**
  * @typedef {{ id?: string, description: string, targetHint: string }} StoryboardStep
- * @typedef {{ index: number, description: string, targetHint: string, status: 'succeeded' | 'skipped', reason?: string }} StepReport
+ * @typedef {{ index: number, description: string, targetHint: string, status: 'succeeded' | 'skipped', reason?: string, startMs?: number, endMs?: number }} StepReport
  */
 
 function sleep(ms) {
@@ -207,6 +207,7 @@ export async function recordStoryboard(options) {
 
   const page = await context.newPage();
   page.setDefaultTimeout(STEP_TIMEOUT_MS);
+  const t0 = Date.now();
 
   let timedOut = false;
   let finished = false;
@@ -217,8 +218,10 @@ export async function recordStoryboard(options) {
 
     for (let i = 0; i < steps.length; i += 1) {
       if (timedOut) break;
+      const startMs = Date.now() - t0;
       const report = await executeStep(page, steps[i], i);
-      reports.push(report);
+      const endMs = Date.now() - t0;
+      reports.push({ ...report, startMs, endMs });
       console.log(
         `[record] step ${report.index}: ${report.status}` +
           (report.reason ? ` (${report.reason})` : ""),
@@ -263,6 +266,7 @@ export async function recordStoryboard(options) {
     finalUrl: safe.url.toString(),
     timedOut,
     steps: reports,
+    timeline: { steps: reports },
     succeeded: reports.filter((r) => r.status === "succeeded").length,
     skipped: reports.filter((r) => r.status === "skipped").length,
     videoPath,

@@ -91,7 +91,7 @@ function buildPrompt(args: {
     })
     .join("\n");
 
-  return `You are planning a polished ~60 second product demo tour of a live web app.
+  return `You are planning a polished ~30 second product demo tour of a live web app.
 
 Project title: ${args.title}
 One-line description: ${args.description}

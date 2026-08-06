@@ -137,7 +137,7 @@ export function StoryboardEditor({
         Record
       </button>
       <p className="text-center text-[12px] text-ink/45">
-        Record is a stub for now — Playwright wiring is checkpoint 5.
+        We film the live site, cut a tight ~30s reel, and give you an MP4 for 6 hours.
       </p>
       <button
         type="button"

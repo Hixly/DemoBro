@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { DownloadScreen } from "@/components/DownloadScreen";
 import { StoryboardEditor } from "@/components/StoryboardEditor";
 import type { StoryboardStep } from "@/lib/storyboard";
 import {
@@ -15,7 +16,9 @@ type Stage =
   | "reading"
   | "fallback"
   | "planning"
-  | "storyboard";
+  | "storyboard"
+  | "working"
+  | "ready";
 
 type StoryboardPayload = {
   title: string;
@@ -23,6 +26,15 @@ type StoryboardPayload = {
   badges: string[];
   steps: StoryboardStep[];
   model?: string;
+};
+
+type JobPoll = {
+  id: string;
+  status: string;
+  stage?: string | null;
+  title?: string;
+  videoUrl?: string | null;
+  error?: string | null;
 };
 
 export function InputForm() {
@@ -35,19 +47,64 @@ export function InputForm() {
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [storyboard, setStoryboard] = useState<StoryboardPayload | null>(null);
-  const [recordNote, setRecordNote] = useState<string | null>(null);
+  const [job, setJob] = useState<JobPoll | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const liveError: FieldError = liveTouched ? validateLiveUrl(liveUrl) : null;
   const githubError: FieldError = githubTouched
     ? validateGithubUrl(githubUrl)
     : null;
-  const busy = stage === "reading" || stage === "planning";
+  const busy = stage === "reading" || stage === "planning" || stage === "working";
   const canSubmit = isFormValid(liveUrl, githubUrl) && !busy;
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  function startPolling(jobId: string) {
+    stopPolling();
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        const payload = (await res.json().catch(() => null)) as JobPoll & {
+          error?: string;
+        } | null;
+        if (!res.ok || !payload) {
+          setError(payload?.error ?? `Job status failed (${res.status})`);
+          return;
+        }
+
+        setJob(payload);
+        if (payload.status === "ready" && payload.videoUrl) {
+          stopPolling();
+          setStage("ready");
+          setError(null);
+        } else if (payload.status === "failed" || payload.status === "expired") {
+          stopPolling();
+          setStage("storyboard");
+          setError(payload.error ?? "Recording failed.");
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Polling failed.");
+      }
+    };
+
+    void tick();
+    pollRef.current = setInterval(() => void tick(), 2500);
+  }
 
   async function requestStoryboard(manualTitleOverride?: string) {
     setStage("planning");
     setError(null);
-    setRecordNote(null);
 
     const res = await fetch("/api/storyboard", {
       method: "POST",
@@ -68,7 +125,6 @@ export function InputForm() {
         steps: StoryboardStep[];
         model?: string;
       };
-      ingestStatus?: string;
     } | null;
 
     if (!res.ok || !payload?.storyboard?.steps) {
@@ -146,6 +202,83 @@ export function InputForm() {
     }
   }
 
+  async function handleRecord() {
+    if (!storyboard) return;
+    setError(null);
+    setStage("working");
+
+    try {
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          liveUrl: liveUrl.trim(),
+          githubUrl: githubUrl.trim(),
+          title: storyboard.title,
+          description: storyboard.description,
+          badges: storyboard.badges,
+          steps: storyboard.steps,
+        }),
+      });
+      const payload = (await res.json().catch(() => null)) as {
+        id?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || !payload?.id) {
+        throw new Error(payload?.error ?? `Could not start job (${res.status})`);
+      }
+      setJob({ id: payload.id, status: "queued", stage: "queued" });
+      startPolling(payload.id);
+    } catch (err) {
+      setStage("storyboard");
+      setError(err instanceof Error ? err.message : "Could not start recording.");
+    }
+  }
+
+  function resetAll() {
+    stopPolling();
+    setStage("input");
+    setStoryboard(null);
+    setJob(null);
+    setError(null);
+    setFallbackMessage(null);
+  }
+
+  if (stage === "ready" && job?.videoUrl) {
+    return (
+      <DownloadScreen
+        title={job.title || storyboard?.title || "Your demo"}
+        videoUrl={job.videoUrl}
+        onAnother={resetAll}
+      />
+    );
+  }
+
+  if (stage === "working" && job) {
+    const label =
+      job.stage === "cutting_video"
+        ? "Cutting your demo…"
+        : job.stage === "touring_app"
+          ? "Filming your app…"
+          : "Queuing your demo…";
+    return (
+      <div className="flex flex-col gap-4">
+        <p className="font-heading text-[15px] font-semibold leading-snug text-ink -rotate-1 origin-left">
+          {label}
+        </p>
+        <p className="text-sm text-ink/60">
+          Hang tight — Playwright is touring the live site, then ffmpeg cuts the
+          reel.
+        </p>
+        {error ? (
+          <p role="alert" className="text-center text-sm font-medium text-danger">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
   if (stage === "storyboard" && storyboard) {
     return (
       <div className="flex flex-col gap-3">
@@ -156,24 +289,15 @@ export function InputForm() {
           steps={storyboard.steps}
           model={storyboard.model}
           onChange={(steps) => setStoryboard({ ...storyboard, steps })}
-          onRecord={() =>
-            setRecordNote(
-              "Record is stubbed for checkpoint 4 — no Playwright yet.",
-            )
-          }
-          onBack={() => {
-            setStage("input");
-            setStoryboard(null);
-            setRecordNote(null);
-            setError(null);
-          }}
+          onRecord={() => void handleRecord()}
+          onBack={resetAll}
         />
-        {recordNote ? (
+        {error ? (
           <p
-            role="status"
-            className="rounded-xl border-2 border-accent bg-accent-soft px-3 py-2 text-center font-heading text-sm font-semibold text-ink rotate-1"
+            role="alert"
+            className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-center font-heading text-sm font-semibold text-danger rotate-1"
           >
-            {recordNote}
+            {error}
           </p>
         ) : null}
       </div>
@@ -325,15 +449,6 @@ export function InputForm() {
           className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-center font-heading text-sm font-semibold text-danger rotate-1"
         >
           {error}
-        </p>
-      ) : null}
-
-      {recordNote ? (
-        <p
-          role="status"
-          className="rounded-xl border-2 border-accent bg-accent-soft px-3 py-2 text-center font-heading text-sm font-semibold text-ink rotate-1"
-        >
-          {recordNote}
         </p>
       ) : null}
     </form>

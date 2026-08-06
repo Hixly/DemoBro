@@ -18,7 +18,7 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "DemoBro.video",
   description:
-    "Generate a polished 60-second demo video of your web app — no screen recording.",
+    "Generate a polished ~30-second demo video of your web app — no screen recording.",
 };
 
 export default function RootLayout({

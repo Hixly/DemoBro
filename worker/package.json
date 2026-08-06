@@ -6,9 +6,11 @@
   "scripts": {
     "start": "node src/index.js",
     "record": "node src/run-checkpoint5.js",
+    "render": "node src/run-checkpoint6.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "playwright": "1.51.0"
   }
 }
