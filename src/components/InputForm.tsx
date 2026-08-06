@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { RepoIngestResult } from "@/lib/github";
+import { StoryboardEditor } from "@/components/StoryboardEditor";
+import type { StoryboardStep } from "@/lib/storyboard";
 import {
   isFormValid,
   validateGithubUrl,
@@ -9,7 +10,20 @@ import {
   type FieldError,
 } from "@/lib/validate";
 
-type Stage = "input" | "reading" | "result";
+type Stage =
+  | "input"
+  | "reading"
+  | "fallback"
+  | "planning"
+  | "storyboard";
+
+type StoryboardPayload = {
+  title: string;
+  description: string;
+  badges: string[];
+  steps: StoryboardStep[];
+  model?: string;
+};
 
 export function InputForm() {
   const [liveUrl, setLiveUrl] = useState("");
@@ -17,120 +31,205 @@ export function InputForm() {
   const [liveTouched, setLiveTouched] = useState(false);
   const [githubTouched, setGithubTouched] = useState(false);
   const [stage, setStage] = useState<Stage>("input");
-  const [ingest, setIngest] = useState<RepoIngestResult | null>(null);
   const [manualTitle, setManualTitle] = useState("");
+  const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [storyboard, setStoryboard] = useState<StoryboardPayload | null>(null);
+  const [recordNote, setRecordNote] = useState<string | null>(null);
 
   const liveError: FieldError = liveTouched ? validateLiveUrl(liveUrl) : null;
   const githubError: FieldError = githubTouched
     ? validateGithubUrl(githubUrl)
     : null;
-  const canSubmit = isFormValid(liveUrl, githubUrl) && stage !== "reading";
+  const busy = stage === "reading" || stage === "planning";
+  const canSubmit = isFormValid(liveUrl, githubUrl) && !busy;
+
+  async function requestStoryboard(manualTitleOverride?: string) {
+    setStage("planning");
+    setError(null);
+    setRecordNote(null);
+
+    const res = await fetch("/api/storyboard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        liveUrl: liveUrl.trim(),
+        githubUrl: githubUrl.trim(),
+        manualTitle: manualTitleOverride?.trim() || undefined,
+      }),
+    });
+
+    const payload = (await res.json().catch(() => null)) as {
+      error?: string;
+      title?: string;
+      description?: string;
+      badges?: string[];
+      storyboard?: {
+        steps: StoryboardStep[];
+        model?: string;
+      };
+      ingestStatus?: string;
+    } | null;
+
+    if (!res.ok || !payload?.storyboard?.steps) {
+      throw new Error(payload?.error ?? `Storyboard failed (${res.status})`);
+    }
+
+    setStoryboard({
+      title: payload.title ?? "Untitled project",
+      description: payload.description ?? "",
+      badges: payload.badges ?? [],
+      steps: payload.storyboard.steps,
+      model: payload.storyboard.model,
+    });
+    setStage("storyboard");
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLiveTouched(true);
     setGithubTouched(true);
     setError(null);
+    setFallbackMessage(null);
 
     if (!isFormValid(liveUrl, githubUrl)) return;
 
     setStage("reading");
-    setIngest(null);
 
     try {
-      const res = await fetch("/api/ingest", {
+      const ingestRes = await fetch("/api/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ githubUrl: githubUrl.trim() }),
       });
 
-      if (!res.ok) {
-        const payload = (await res.json().catch(() => null)) as {
+      if (!ingestRes.ok) {
+        const payload = (await ingestRes.json().catch(() => null)) as {
           error?: string;
         } | null;
-        throw new Error(payload?.error ?? `Ingest failed (${res.status})`);
+        throw new Error(payload?.error ?? `Ingest failed (${ingestRes.status})`);
       }
 
-      const result = (await res.json()) as RepoIngestResult;
-      setIngest(result);
-      if (result.status === "fallback") {
-        setManualTitle(result.suggestedTitle);
+      const ingest = (await ingestRes.json()) as {
+        status: "ok" | "fallback";
+        message?: string;
+        suggestedTitle?: string;
+      };
+
+      if (ingest.status === "fallback") {
+        setManualTitle(ingest.suggestedTitle ?? "");
+        setFallbackMessage(
+          ingest.message ?? "Couldn’t read that repo — enter a title to continue.",
+        );
+        setStage("fallback");
+        return;
       }
-      setStage("result");
+
+      await requestStoryboard();
     } catch (err) {
       setStage("input");
-      setError(
-        err instanceof Error ? err.message : "Couldn’t read that repo.",
-      );
+      setError(err instanceof Error ? err.message : "Something went wrong.");
     }
   }
 
-  if (stage === "result" && ingest) {
+  async function continueFromFallback(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!manualTitle.trim()) {
+      setError("Enter a project title to continue.");
+      return;
+    }
+    try {
+      await requestStoryboard(manualTitle);
+    } catch (err) {
+      setStage("fallback");
+      setError(err instanceof Error ? err.message : "Storyboard failed.");
+    }
+  }
+
+  if (stage === "storyboard" && storyboard) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3">
+        <StoryboardEditor
+          title={storyboard.title}
+          description={storyboard.description}
+          badges={storyboard.badges}
+          steps={storyboard.steps}
+          model={storyboard.model}
+          onChange={(steps) => setStoryboard({ ...storyboard, steps })}
+          onRecord={() =>
+            setRecordNote(
+              "Record is stubbed for checkpoint 4 — no Playwright yet.",
+            )
+          }
+          onBack={() => {
+            setStage("input");
+            setStoryboard(null);
+            setRecordNote(null);
+            setError(null);
+          }}
+        />
+        {recordNote ? (
+          <p
+            role="status"
+            className="rounded-xl border-2 border-accent bg-accent-soft px-3 py-2 text-center font-heading text-sm font-semibold text-ink rotate-1"
+          >
+            {recordNote}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (stage === "fallback") {
+    return (
+      <form
+        className="flex flex-col gap-4"
+        onSubmit={continueFromFallback}
+        noValidate
+      >
         <p className="font-heading text-[15px] font-semibold leading-snug text-ink -rotate-1 origin-left">
-          {ingest.status === "ok" ? "Reading your repo" : "Couldn’t read that repo"}
+          Couldn’t read that repo
         </p>
-
-        {ingest.status === "ok" ? (
-          <>
-            <div className="rounded-xl border-2 border-ink bg-background p-3 -rotate-1">
-              <p className="font-heading text-lg font-bold text-ink">
-                {ingest.title}
-              </p>
-              <p className="mt-1 text-sm leading-snug text-ink/70">
-                {ingest.description}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {ingest.badges.map((badge) => (
-                  <span key={badge} className="stamp-badge font-heading">
-                    {badge}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <p className="font-mono text-[11px] text-ink/45">
-              {ingest.owner}/{ingest.repo} · checkpoint 3 — storyboard next
-            </p>
-          </>
-        ) : (
-          <>
-            <p className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-sm font-medium text-danger rotate-1">
-              {ingest.message}
-            </p>
-            <label className="flex flex-col gap-1.5">
-              <span className="font-heading text-sm font-semibold text-ink">
-                Project title
-              </span>
-              <input
-                type="text"
-                name="manualTitle"
-                value={manualTitle}
-                onChange={(e) => setManualTitle(e.target.value)}
-                placeholder="Name your project"
-                className="stamp-input font-heading text-sm"
-              />
-            </label>
-            <p className="text-[13px] leading-relaxed text-ink/55">
-              Private or missing repos don’t block you — add a title and keep
-              going.
-            </p>
-          </>
-        )}
-
+        {fallbackMessage ? (
+          <p className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-sm font-medium text-danger rotate-1">
+            {fallbackMessage}
+          </p>
+        ) : null}
+        <label className="flex flex-col gap-1.5">
+          <span className="font-heading text-sm font-semibold text-ink">
+            Project title
+          </span>
+          <input
+            type="text"
+            name="manualTitle"
+            value={manualTitle}
+            onChange={(e) => {
+              setManualTitle(e.target.value);
+              setError(null);
+            }}
+            placeholder="Name your project"
+            className="stamp-input font-heading text-sm"
+          />
+        </label>
+        <button type="submit" className="stamp-button font-heading -rotate-1">
+          Continue to storyboard
+        </button>
         <button
           type="button"
           onClick={() => {
             setStage("input");
-            setIngest(null);
             setError(null);
           }}
-          className="stamp-button font-heading -rotate-1"
+          className="font-heading text-sm font-semibold text-ink/60 underline-offset-2 hover:underline"
         >
           Back
         </button>
-      </div>
+        {error ? (
+          <p role="alert" className="text-center text-sm font-medium text-danger">
+            {error}
+          </p>
+        ) : null}
+      </form>
     );
   }
 
@@ -139,7 +238,9 @@ export function InputForm() {
       <p className="font-heading text-[15px] font-semibold leading-snug text-ink -rotate-1 origin-left">
         {stage === "reading"
           ? "Reading your repo…"
-          : "Drop your links. We film the tour."}
+          : stage === "planning"
+            ? "Touring your app…"
+            : "Drop your links. We film the tour."}
       </p>
 
       <label className="flex flex-col gap-1.5">
@@ -153,7 +254,7 @@ export function InputForm() {
           autoComplete="url"
           placeholder="https://your-app.vercel.app"
           value={liveUrl}
-          disabled={stage === "reading"}
+          disabled={busy}
           onChange={(e) => {
             setLiveUrl(e.target.value);
             setError(null);
@@ -181,7 +282,7 @@ export function InputForm() {
           autoComplete="off"
           placeholder="https://github.com/owner/repo"
           value={githubUrl}
-          disabled={stage === "reading"}
+          disabled={busy}
           onChange={(e) => {
             setGithubUrl(e.target.value);
             setError(null);
@@ -206,7 +307,11 @@ export function InputForm() {
         disabled={!canSubmit}
         className="stamp-button font-heading mt-1 -rotate-1 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:translate-y-0"
       >
-        {stage === "reading" ? "Reading your repo…" : "Generate demo"}
+        {stage === "reading"
+          ? "Reading your repo…"
+          : stage === "planning"
+            ? "Touring your app…"
+            : "Generate demo"}
       </button>
 
       <p className="text-center text-[13px] leading-relaxed text-ink/55">
@@ -220,6 +325,15 @@ export function InputForm() {
           className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-center font-heading text-sm font-semibold text-danger rotate-1"
         >
           {error}
+        </p>
+      ) : null}
+
+      {recordNote ? (
+        <p
+          role="status"
+          className="rounded-xl border-2 border-accent bg-accent-soft px-3 py-2 text-center font-heading text-sm font-semibold text-ink rotate-1"
+        >
+          {recordNote}
         </p>
       ) : null}
     </form>
