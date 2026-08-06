@@ -98,14 +98,3 @@ body {
   transform: translate(2px, 2px) rotate(-1deg);
   box-shadow: 2px 2px 0 var(--border);
 }
-
-.stamp-badge {
-  border: 2px solid var(--accent);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  padding: 0.3rem 0.75rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--accent);
-  white-space: nowrap;
-}

@@ -1,0 +1,33 @@
+/** User-facing pipeline steps shown on the render-wait screen. */
+export const PIPELINE_STAGES = [
+  { id: "reading_repo", label: "Reading your repo" },
+  { id: "writing_storyboard", label: "Writing the storyboard" },
+  { id: "filming_site", label: "Filming your site" },
+  { id: "rendering", label: "Rendering" },
+] as const;
+
+export type PipelineStageId = (typeof PIPELINE_STAGES)[number]["id"];
+
+/**
+ * Map UI / worker stage strings to the current pipeline step.
+ * Worker stages: queued | filming_app | cutting_video | ready
+ * Web stages before the job: reading | planning
+ */
+export function resolvePipelineStage(
+  uiStage: string,
+  workerStage?: string | null,
+): PipelineStageId {
+  if (uiStage === "reading") return "reading_repo";
+  if (uiStage === "planning") return "writing_storyboard";
+
+  switch (workerStage) {
+    case "cutting_video":
+    case "rendering":
+      return "rendering";
+    case "filming_app":
+    case "recording":
+    case "queued":
+    default:
+      return "filming_site";
+  }
+}

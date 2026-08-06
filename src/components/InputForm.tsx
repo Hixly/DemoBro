@@ -1,8 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { DownloadScreen } from "@/components/DownloadScreen";
+import { RenderWait } from "@/components/RenderWait";
 import { StoryboardEditor } from "@/components/StoryboardEditor";
+import { resolvePipelineStage } from "@/lib/pipeline-stages";
 import type { StoryboardStep } from "@/lib/storyboard";
 import {
   isFormValid,
@@ -48,7 +56,13 @@ export function InputForm() {
   const [error, setError] = useState<string | null>(null);
   const [storyboard, setStoryboard] = useState<StoryboardPayload | null>(null);
   const [job, setJob] = useState<JobPoll | null>(null);
+  const [notifyEnabled, setNotifyEnabled] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const notifiedRef = useRef(false);
+  const notifyEnabledRef = useRef(false);
+  const storyboardTitleRef = useRef<string | undefined>(undefined);
+  notifyEnabledRef.current = notifyEnabled;
+  storyboardTitleRef.current = storyboard?.title;
 
   const liveError: FieldError = liveTouched ? validateLiveUrl(liveUrl) : null;
   const githubError: FieldError = githubTouched
@@ -86,6 +100,22 @@ export function InputForm() {
         setJob(payload);
         if (payload.status === "ready" && payload.videoUrl) {
           stopPolling();
+          if (
+            notifyEnabledRef.current &&
+            !notifiedRef.current &&
+            typeof Notification !== "undefined" &&
+            Notification.permission === "granted"
+          ) {
+            notifiedRef.current = true;
+            try {
+              new Notification("DemoBro — video ready", {
+                body: `${payload.title || storyboardTitleRef.current || "Your demo"} is ready to watch.`,
+                tag: "demobro-ready",
+              });
+            } catch {
+              // ignore notification failures
+            }
+          }
           setStage("ready");
           setError(null);
         } else if (payload.status === "failed" || payload.status === "expired") {
@@ -242,45 +272,47 @@ export function InputForm() {
     setJob(null);
     setError(null);
     setFallbackMessage(null);
+    setNotifyEnabled(false);
+    notifiedRef.current = false;
+  }
+
+  function shell(children: ReactNode, opts?: { wide?: boolean }) {
+    return (
+      <section
+        className={`stamp-card relative mx-auto w-full p-6 sm:p-7 ${
+          opts?.wide
+            ? "max-w-3xl translate-x-0 rotate-0 lg:rotate-[0.5deg]"
+            : "max-w-[26rem] translate-x-2 rotate-[2.5deg] sm:translate-x-3"
+        }`}
+      >
+        {children}
+      </section>
+    );
   }
 
   if (stage === "ready" && job?.videoUrl) {
-    return (
+    return shell(
       <DownloadScreen
         title={job.title || storyboard?.title || "Your demo"}
         videoUrl={job.videoUrl}
         onAnother={resetAll}
-      />
+      />,
     );
   }
 
-  if (stage === "working" && job) {
-    const label =
-      job.stage === "cutting_video"
-        ? "Cutting your demo…"
-        : job.stage === "touring_app"
-          ? "Filming your app…"
-          : "Queuing your demo…";
-    return (
-      <div className="flex flex-col gap-4">
-        <p className="font-heading text-[15px] font-semibold leading-snug text-ink -rotate-1 origin-left">
-          {label}
-        </p>
-        <p className="text-sm text-ink/60">
-          Hang tight — Playwright is touring the live site, then ffmpeg cuts the
-          reel.
-        </p>
-        {error ? (
-          <p role="alert" className="text-center text-sm font-medium text-danger">
-            {error}
-          </p>
-        ) : null}
-      </div>
+  if (stage === "reading" || stage === "planning" || stage === "working") {
+    return shell(
+      <RenderWait
+        currentStage={resolvePipelineStage(stage, job?.stage)}
+        notifyEnabled={notifyEnabled}
+        onNotifyChange={setNotifyEnabled}
+        error={error}
+      />,
     );
   }
 
   if (stage === "storyboard" && storyboard) {
-    return (
+    return shell(
       <div className="flex flex-col gap-3">
         <StoryboardEditor
           title={storyboard.title}
@@ -300,12 +332,13 @@ export function InputForm() {
             {error}
           </p>
         ) : null}
-      </div>
+      </div>,
+      { wide: true },
     );
   }
 
   if (stage === "fallback") {
-    return (
+    return shell(
       <form
         className="flex flex-col gap-4"
         onSubmit={continueFromFallback}
@@ -353,18 +386,14 @@ export function InputForm() {
             {error}
           </p>
         ) : null}
-      </form>
+      </form>,
     );
   }
 
-  return (
+  return shell(
     <form className="flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
       <p className="font-heading text-[15px] font-semibold leading-snug text-ink -rotate-1 origin-left">
-        {stage === "reading"
-          ? "Reading your repo…"
-          : stage === "planning"
-            ? "Touring your app…"
-            : "Drop your links. We film the tour."}
+        Drop your links. We film the tour.
       </p>
 
       <label className="flex flex-col gap-1.5">
@@ -431,16 +460,12 @@ export function InputForm() {
         disabled={!canSubmit}
         className="stamp-button font-heading mt-1 -rotate-1 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:translate-y-0"
       >
-        {stage === "reading"
-          ? "Reading your repo…"
-          : stage === "planning"
-            ? "Touring your app…"
-            : "Generate demo"}
+        Generate demo
       </button>
 
       <p className="text-center text-[13px] leading-relaxed text-ink/55">
-        Your project needs to be deployed and publicly accessible — a
-        vercel.app or netlify.app URL works fine.
+        Your project needs a public URL — railway.app, Vercel, Netlify, or any
+        live link works.
       </p>
 
       {error ? (
@@ -451,6 +476,6 @@ export function InputForm() {
           {error}
         </p>
       ) : null}
-    </form>
+    </form>,
   );
 }

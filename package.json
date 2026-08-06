@@ -6,11 +6,13 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "brand:logo": "python scripts/make-logo-transparent.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
     "cheerio": "^1.2.0",
+    "framer-motion": "^13.0.0",
     "next": "15.5.22",
     "react": "19.1.0",
     "react-dom": "19.1.0"
