@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "record": "node src/run-checkpoint5.js",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "1.51.0"
   }
 }
