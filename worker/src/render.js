@@ -113,13 +113,15 @@ export function planSegments(timeline, totalDurationSec) {
 
   const segments = [];
   for (const step of steps) {
-    let start = Math.max(0, ((step.startMs ?? 0) - 150) / 1000);
-    let end = Math.min(totalDurationSec, ((step.endMs ?? 0) + 450) / 1000);
+    // Keep a little lead-in / trail so each beat can breathe (~5s windows).
+    let start = Math.max(0, ((step.startMs ?? 0) - 250) / 1000);
+    let end = Math.min(totalDurationSec, ((step.endMs ?? 0) + 800) / 1000);
     const dur = end - start;
     if (dur < 0.35) continue;
 
-    if (dur > 5.5) {
-      start = Math.max(start, end - 4);
+    // Only trim very long waits — keep up to ~5s of a good window.
+    if (dur > 6.5) {
+      start = Math.max(start, end - 5);
     }
 
     const prev = segments[segments.length - 1];
@@ -158,17 +160,14 @@ async function pngToFadedClip(pngPath, outPath, durationSec) {
 }
 
 /**
- * Extract a footage window to a true 30fps H.264 clip.
- * When source is under ~30fps (Playwright ~25), minterpolate synthesizes
- * in-between frames instead of duplicating via -r 30.
+ * Extract a footage window to a true 30fps CFR H.264 clip.
+ * Screen demos use plain fps=30 (frame dup) — never minterpolate.
+ * MCI on UI recordings invents motion and leaves pulsing dark halos.
  */
-async function extractSegment(rawPath, seg, outPath, speed = 1, interpolate = false) {
+async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const dur = Math.max(0.2, seg.end - seg.start);
   const outDur = dur / speed;
   const fadeOutStart = Math.max(0, outDur - 0.25);
-  const fpsStage = interpolate
-    ? "minterpolate=fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
-    : "fps=30";
   await run("ffmpeg", [
     "-y",
     "-ss",
@@ -182,7 +181,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1, interpolate = fa
       `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
       `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2`,
       `setpts=PTS/${speed}`,
-      fpsStage,
+      "fps=30",
       `fade=t=in:st=0:d=0.25`,
       `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25`,
     ].join(","),
@@ -284,8 +283,6 @@ export async function renderDemo(opts) {
     const logoPath = await resolveLogoPath(opts.logoPath);
     const total = await probeDuration(opts.rawVideoPath);
     const sourceFps = (await probeFps(opts.rawVideoPath)) ?? 25;
-    // Playwright Chromium recordVideo is ~25fps; -r 30 alone only dupes frames.
-    const interpolate = sourceFps < 29.5;
     const segments = planSegments(opts.timeline, total);
 
     const contentSecs = segments.reduce((acc, s) => acc + (s.end - s.start), 0);
@@ -300,7 +297,7 @@ export async function renderDemo(opts) {
     }
 
     console.log(
-      `[render] source=${sourceFps.toFixed(2)}fps interpolate=${interpolate} speed=${speed.toFixed(2)}`,
+      `[render] source=${sourceFps.toFixed(2)}fps interpolate=false speed=${speed.toFixed(2)}`,
     );
 
     const titlePng = path.join(tmp, "title.png");
@@ -332,13 +329,7 @@ export async function renderDemo(opts) {
     const clipPaths = [];
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
-      await extractSegment(
-        opts.rawVideoPath,
-        segments[i],
-        clip,
-        speed,
-        interpolate,
-      );
+      await extractSegment(opts.rawVideoPath, segments[i], clip, speed);
       clipPaths.push(clip);
     }
 
@@ -351,7 +342,6 @@ export async function renderDemo(opts) {
         { start: 0, end: Math.min(total, 20) },
         bodyPath,
         1,
-        interpolate,
       );
     }
 
@@ -366,7 +356,7 @@ export async function renderDemo(opts) {
       speed,
       logoPath,
       sourceFps,
-      interpolate,
+      interpolate: false,
     };
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});

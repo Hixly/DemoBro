@@ -27,7 +27,7 @@ const STORYBOARD_SCHEMA = {
   properties: {
     steps: {
       type: "array",
-      minItems: 4,
+      minItems: 5,
       maxItems: 6,
       items: {
         type: "object",
@@ -107,10 +107,12 @@ ${args.readmeExcerpt.slice(0, 1500)}
 Interactive / structural elements found on the rendered page:
 ${elementLines || "(no elements extracted — infer carefully from README and URL)"}
 
-Propose 4-6 demo steps. Rules:
+Propose 5-6 demo steps that actually exercise the app's core features. Rules:
 - Each step is ONE concrete user action a browser can perform.
+- Prefer 5 or 6 steps — enough to fill a ~20–25s tour, not a thin 3-click skim.
 - Step 1 should land on / pause on the hero or primary landing view.
 - Prefer real controls from the element list above.
+- ALWAYS put a "type into the input/textarea" step immediately BEFORE any "click Generate / Submit / Send / Analyze" step so the button is enabled and the interactive flow films (never click a disabled submit).
 - description: short plain English, imperative ("Click Try it free").
 - targetHint: a real selector or accessible-name hint suitable for Playwright (prefer the hint= values above, or role+name, or :has-text("...")).
 - Do not invent payment/auth flows unless clearly present.
@@ -142,8 +144,8 @@ function parseSteps(content: string): Array<{ description: string; targetHint: s
     }))
     .filter((step) => step.description && step.targetHint);
 
-  if (steps.length < 4 || steps.length > 6) {
-    throw new Error(`Grok returned ${steps.length} steps; expected 4–6.`);
+  if (steps.length < 5 || steps.length > 6) {
+    throw new Error(`Grok returned ${steps.length} steps; expected 5–6.`);
   }
   return steps;
 }
@@ -170,8 +172,14 @@ export async function generateStoryboard(args: {
     elements: page.structure.elements,
   });
 
-  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45_000);
+
+  let res: Response;
+  try {
+    res = await fetch("https://api.x.ai/v1/chat/completions", {
     method: "POST",
+    signal: controller.signal,
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
@@ -196,7 +204,15 @@ export async function generateStoryboard(args: {
         },
       },
     }),
-  });
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("Grok took too long to write the storyboard (45s). Try again.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");

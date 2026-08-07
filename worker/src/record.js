@@ -2,11 +2,27 @@ import { mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { assertSafePublicUrl } from "./ssrf.js";
+import { resolveSteps } from "./resolve-selectors.js";
 
 const VIEWPORT = { width: 1920, height: 1080 };
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
 const STEP_TIMEOUT_MS = 8_000;
-const SETTLE_MS = 1_200;
+// ~2.5–3s of hold per kept step so tours fill the 20–25s budget.
+const SETTLE_MS = 1_800;
+// Fallback text typed into a field when the step doesn't specify its own.
+const DEFAULT_INPUT_TEXT =
+  "Write a short, friendly welcome email to a new customer.";
+
+/** Pull an explicit value out of a step description, if it names one. */
+function extractTypedValue(description) {
+  const quoted = description.match(/["'“”](.{2,}?)["'“”]/);
+  if (quoted) return quoted[1].trim();
+  const verb = description.match(
+    /\b(?:type|enter|write|fill(?:\s+in)?|paste|search for)\s+(.{3,})/i,
+  );
+  if (verb) return verb[1].replace(/\s+\binto\b.*$/i, "").trim();
+  return null;
+}
 
 /**
  * @typedef {{ id?: string, description: string, targetHint: string }} StoryboardStep
@@ -128,7 +144,7 @@ async function executeStep(page, step, index) {
         ? step.targetHint
         : page.url();
       await safeGoto(page, looksLikeUrl(step.targetHint) ? step.targetHint : url);
-      await sleep(SETTLE_MS + 800);
+      await sleep(SETTLE_MS + 1_000);
       return { ...base, status: "succeeded" };
     }
 
@@ -148,12 +164,27 @@ async function executeStep(page, step, index) {
       tag === "video"
     ) {
       await locator.hover({ timeout: STEP_TIMEOUT_MS }).catch(() => {});
-      await sleep(SETTLE_MS + 1500);
+      await sleep(SETTLE_MS + 1_200);
+      return { ...base, status: "succeeded" };
+    }
+
+    // Fill text fields so interactive flows unlock (e.g. typing a prompt
+    // enables a Generate button that a click step films right after).
+    const wantsType = /\b(type|enter|fill|write|paste|search)\b/.test(desc);
+    if (tag === "input" || tag === "textarea" || (wantsType && tag !== "button")) {
+      const value = extractTypedValue(step.description) || DEFAULT_INPUT_TEXT;
+      await locator.click({ timeout: STEP_TIMEOUT_MS }).catch(() => {});
+      try {
+        await locator.fill(value, { timeout: STEP_TIMEOUT_MS });
+      } catch {
+        await locator.pressSequentially(value, { delay: 25 }).catch(() => {});
+      }
+      await sleep(SETTLE_MS + 1_000);
       return { ...base, status: "succeeded" };
     }
 
     await locator.click({ timeout: STEP_TIMEOUT_MS });
-    await sleep(SETTLE_MS);
+    await sleep(SETTLE_MS + 900);
     return { ...base, status: "succeeded" };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -211,15 +242,31 @@ export async function recordStoryboard(options) {
 
   let timedOut = false;
   let finished = false;
+  /** @type {Array} */
+  let resolution = [];
 
   const session = (async () => {
     await safeGoto(page, safe.url.toString());
     await sleep(SETTLE_MS);
 
-    for (let i = 0; i < steps.length; i += 1) {
+    // Ground selectors in the hydrated DOM + verify/repair/drop before filming,
+    // so we never burn an 8s film timeout on a selector that can't resolve.
+    await sleep(1_000); // extra beat for SPA hydration
+    let filmSteps = steps;
+    try {
+      const resolved = await resolveSteps(page, steps);
+      filmSteps = resolved.steps;
+      resolution = resolved.report;
+    } catch (err) {
+      console.warn(
+        `[record] selector resolve failed, filming raw steps: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
+    for (let i = 0; i < filmSteps.length; i += 1) {
       if (timedOut) break;
       const startMs = Date.now() - t0;
-      const report = await executeStep(page, steps[i], i);
+      const report = await executeStep(page, filmSteps[i], i);
       const endMs = Date.now() - t0;
       reports.push({ ...report, startMs, endMs });
       console.log(
@@ -266,6 +313,7 @@ export async function recordStoryboard(options) {
     finalUrl: safe.url.toString(),
     timedOut,
     steps: reports,
+    resolution,
     timeline: { steps: reports },
     succeeded: reports.filter((r) => r.status === "succeeded").length,
     skipped: reports.filter((r) => r.status === "skipped").length,
