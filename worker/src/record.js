@@ -2,7 +2,7 @@ import { mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { assertSafePublicUrl } from "./ssrf.js";
-import { resolveSteps } from "./resolve-selectors.js";
+import { resolveStep } from "./resolve-selectors.js";
 
 const VIEWPORT = { width: 1920, height: 1080 };
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
@@ -244,29 +244,57 @@ export async function recordStoryboard(options) {
   let finished = false;
   /** @type {Array} */
   let resolution = [];
+  // Selectors claimed by earlier filmed steps — shared across JIT resolves.
+  const claimed = new Set();
 
   const session = (async () => {
     await safeGoto(page, safe.url.toString());
     await sleep(SETTLE_MS);
+    await sleep(1_000); // SPA hydration beat before step 1
 
-    // Ground selectors in the hydrated DOM + verify/repair/drop before filming,
-    // so we never burn an 8s film timeout on a selector that can't resolve.
-    await sleep(1_000); // extra beat for SPA hydration
-    let filmSteps = steps;
-    try {
-      const resolved = await resolveSteps(page, steps);
-      filmSteps = resolved.steps;
-      resolution = resolved.report;
-    } catch (err) {
-      console.warn(
-        `[record] selector resolve failed, filming raw steps: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-
-    for (let i = 0; i < filmSteps.length; i += 1) {
+    // Keep EVERY planned step. Resolve each one just-in-time against the live
+    // DOM after prior steps have run — so Analyze/post-Generate UI can appear.
+    for (let i = 0; i < steps.length; i += 1) {
       if (timedOut) break;
+
+      let filmStep = steps[i];
+      try {
+        const resolved = await resolveStep(page, steps[i], { claimed });
+        resolution.push(resolved.report);
+        console.log(
+          `[resolve] ${resolved.report.resolution}` +
+            (resolved.report.to ? ` → ${resolved.report.to}` : "") +
+            ` — ${steps[i].description}`,
+        );
+        if (resolved.skip || !resolved.step) {
+          const startMs = Date.now() - t0;
+          reports.push({
+            index: i + 1,
+            description: steps[i].description,
+            targetHint: steps[i].targetHint,
+            status: "skipped",
+            reason: "selector unresolved in current app state",
+            startMs,
+            endMs: Date.now() - t0,
+          });
+          console.log(
+            `[record] step ${i + 1}: skipped (selector unresolved in current app state)`,
+          );
+          continue;
+        }
+        filmStep = resolved.step;
+      } catch (err) {
+        console.warn(
+          `[resolve] step ${i + 1} resolve failed, filming raw: ${err instanceof Error ? err.message : err}`,
+        );
+        resolution.push({
+          description: steps[i].description,
+          resolution: "unchecked",
+        });
+      }
+
       const startMs = Date.now() - t0;
-      const report = await executeStep(page, filmSteps[i], i);
+      const report = await executeStep(page, filmStep, i);
       const endMs = Date.now() - t0;
       reports.push({ ...report, startMs, endMs });
       console.log(
