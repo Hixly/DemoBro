@@ -22,10 +22,8 @@ const CLICK_RING_PNG = path.resolve(__dirname, "../assets/click-ring.png");
 const CURSOR_PNG = path.resolve(__dirname, "../assets/cursor.png");
 const SFX_CLICK = path.resolve(__dirname, "../assets/sfx/click.wav");
 const SFX_WHOOSH = path.resolve(__dirname, "../assets/sfx/whoosh.wav");
-const CAPTION_FONT_CANDIDATES = [
-  path.resolve(__dirname, "../assets/fonts/Fredoka-SemiBold.ttf"),
-  path.resolve(__dirname, "../assets/fonts/Inter-Regular.ttf"),
-];
+/** Caption pill fade in/out (seconds). */
+const CAPTION_FADE = 0.2;
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -243,27 +241,8 @@ function clampTitleDescription(text, maxLen = 110) {
   return `${base}…`;
 }
 
-let _captionFontResolved = null;
-async function captionFontPath() {
-  if (_captionFontResolved) return _captionFontResolved;
-  for (const candidate of CAPTION_FONT_CANDIDATES) {
-    try {
-      await access(candidate);
-      _captionFontResolved = candidate;
-      return candidate;
-    } catch {
-      /* try next */
-    }
-  }
-  throw new Error("No caption font found in worker/assets/fonts");
-}
-
-function ffmpegFontPath(absPath) {
-  return absPath.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1\\:");
-}
-
 /**
- * Shorten storyboard prose into a caption beat (~6 words / 36 chars).
+ * Shorten storyboard prose into one short caption phrase (~8 words / 48 chars).
  */
 export function shortenCaption(description) {
   let s = String(description ?? "")
@@ -274,7 +253,7 @@ export function shortenCaption(description) {
 
   const visit = s.match(/^(visit|open|go to|navigate to)\s+(?:the\s+)?(.+)/i);
   if (visit) {
-    const rest = visit[2].split(/\s+/).slice(0, 4).join(" ");
+    const rest = visit[2].split(/\s+/).slice(0, 5).join(" ");
     s = `Visit ${rest}`;
   } else if (/^(type|enter|fill|write)\s+/i.test(s)) {
     const rest = s
@@ -282,20 +261,20 @@ export function shortenCaption(description) {
       .replace(/\s+into the .+$/i, "")
       .replace(/\s+in the .+$/i, "")
       .split(/\s+/)
-      .slice(0, 5)
+      .slice(0, 6)
       .join(" ");
     s = `Type ${rest}`;
   } else if (/^(click|tap|press|select)\s+/i.test(s)) {
     s = s
       .replace(/^(click|tap|press|select)\s+/i, "")
       .split(/\s+/)
-      .slice(0, 5)
+      .slice(0, 6)
       .join(" ");
   } else {
-    s = s.split(/\s+/).slice(0, 6).join(" ");
+    s = s.split(/\s+/).slice(0, 8).join(" ");
   }
 
-  if (s.length > 36) s = `${s.slice(0, 33).trim()}…`;
+  if (s.length > 48) s = `${s.slice(0, 45).trim()}…`;
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
 }
 
@@ -422,31 +401,6 @@ function clickPulsePlan(seg, outDur) {
   return { kind, ax, ay, t0, t1 };
 }
 
-/** Escape text for ffmpeg drawtext `text=` values. */
-function escapeDrawText(text) {
-  return String(text ?? "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 48)
-    .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
-    .replace(/'/g, "\u2019")
-    .replace(/%/g, "%%");
-}
-
-/**
- * Caption placement: prefer top stamp clear of nav; park near bottom when the
- * target sits high so we don't cover the field being typed into.
- */
-function captionYExpr(seg) {
-  // Establish beats: bottom stamp clears the site's top nav pills.
-  if (seg.stepKind === "nav" || !seg.box) return "h-text_h-72";
-  const by = seg.box.y + seg.box.h / 2;
-  // High targets (type fields): park stamp near bottom so it doesn't cover input.
-  if (by < H * 0.42) return "h-text_h-80";
-  return "52";
-}
-
 /** Rewrite weak/misleading captions when capture soft-failed. */
 function captionCopyForSeg(seg) {
   const raw = seg.description || "";
@@ -461,45 +415,30 @@ function captionCopyForSeg(seg) {
 }
 
 /**
- * DemoBro stamp caption: cream plate + ink type + blue offset shadow.
+ * Render one lower-third caption PNG (full phrase, dark pill) via cards.js.
  */
-async function buildCaptionFilter(seg, outDur) {
+async function prepareCaptionPng(seg, outPath) {
   const short = captionCopyForSeg(seg);
-  if (!short) return "";
-  const text = escapeDrawText(short);
-  if (!text) return "";
+  if (!short) return null;
+  await renderCardPng(outPath, "caption", { text: short }, null);
+  console.log(`[render] caption="${short}" lower-third png`);
+  return short;
+}
 
-  const font = ffmpegFontPath(await captionFontPath());
-  const fade = 0.28;
-  const tEnd = Math.max(fade + 0.15, outDur - 0.12);
-  const alpha =
-    `if(lt(t\\,${fade.toFixed(3)})\\,t/${fade.toFixed(3)}\\,` +
-    `if(gt(t\\,${(tEnd - fade).toFixed(3)})\\,(${tEnd.toFixed(3)}-t)/${fade.toFixed(3)}\\,1))`;
-  const y = captionYExpr(seg);
-
-  const yMode = captionYExpr(seg).includes("h-text") ? "bottom" : "top";
-  console.log(`[render] caption="${short}" y=${yMode} stamp`);
-
-  const common =
-    `fontfile='${font}':text='${text}':fontsize=34:` +
-    `box=1:boxborderw=14:alpha='${alpha}'`;
-
-  // Accent offset (DemoBro stamp shadow), then cream plate + ink text + border.
-  const shadow =
-    `drawtext=${common}:` +
-    `fontcolor=0x2BACFC@0:` +
-    `boxcolor=0x2BACFC@0.95:` +
-    `x=(w-text_w)/2+4:` +
-    `y=${y}+4`;
-  const plate =
-    `drawtext=${common}:` +
-    `fontcolor=0x141414:` +
-    `borderw=2:bordercolor=0x141414:` +
-    `boxcolor=0xFAF9F6@0.96:` +
-    `x=(w-text_w)/2:` +
-    `y=${y}`;
-
-  return `${shadow},${plate}`;
+/**
+ * Fade caption PNG alpha in/out, then overlay at 0:0 (bar already positioned).
+ * Returns filter_complex fragment ending at `outLabel` (e.g. `[vout]`).
+ */
+function captionOverlayGraph(zoomedLabel, captionInputIdx, outDur, outLabel) {
+  const fade = CAPTION_FADE;
+  const fadeOutStart = Math.max(fade + 0.12, outDur - fade - 0.05);
+  return (
+    `[${captionInputIdx}:v]format=rgba,` +
+    `fade=t=in:st=0:d=${fade.toFixed(3)}:alpha=1,` +
+    `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fade.toFixed(3)}:alpha=1[cap];` +
+    `${zoomedLabel}[cap]overlay=0:0:format=auto` +
+    outLabel
+  );
 }
 
 async function pngToFadedClip(pngPath, outPath, durationSec) {
@@ -598,7 +537,7 @@ async function muxVideoAudio(videoPath, audioPath, outPath, outDur) {
 
 /**
  * Extract a footage window: spotlight → cursor → click ring → eased zoom →
- * vignette → caption → fades. Plain fps=30 CFR. Muxes soft SFX.
+ * vignette → caption PNG overlay → fades. Plain fps=30 CFR. Muxes soft SFX.
  */
 async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const dur = Math.max(0.2, seg.end - seg.start);
@@ -616,15 +555,14 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
     ? ""
     : buildSpotlightFilter(seg.box ?? null, spotUntil);
   const vignette = buildVignetteFilter(seg.box ?? null);
-  const caption = await buildCaptionFilter(seg, outDur);
-
-  const postZoom = [zoom, vignette, caption, `fade=t=in:st=0:d=0.25`, `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25`, "format=yuv420p"]
-    .filter(Boolean)
-    .join(",");
 
   const tmpDir = path.dirname(outPath);
-  const videoOnly = path.join(tmpDir, `${path.basename(outPath, ".mp4")}-v.mp4`);
-  const audioWav = path.join(tmpDir, `${path.basename(outPath, ".mp4")}-a.wav`);
+  const stem = path.basename(outPath, ".mp4");
+  const videoOnly = path.join(tmpDir, `${stem}-v.mp4`);
+  const audioWav = path.join(tmpDir, `${stem}-a.wav`);
+  const captionPng = path.join(tmpDir, `${stem}-caption.png`);
+  const captionText = await prepareCaptionPng(seg, captionPng);
+  const hasCaption = Boolean(captionText);
 
   const pre = [
     `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
@@ -633,8 +571,11 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
     "fps=30",
     spotlight,
   ].filter(Boolean);
+  const zoomChain = [zoom, vignette].filter(Boolean).join(",");
+  const endFades =
+    `fade=t=in:st=0:d=0.25,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25,format=yuv420p`;
 
-  if (!pulse) {
+  if (!pulse && !hasCaption) {
     await run("ffmpeg", [
       "-y",
       "-ss",
@@ -644,7 +585,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-t",
       dur.toFixed(3),
       "-vf",
-      [...pre, postZoom].join(","),
+      [...pre, zoomChain, endFades].filter(Boolean).join(","),
       "-an",
       "-c:v",
       "libx264",
@@ -654,6 +595,42 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "30",
       "-fps_mode",
       "cfr",
+      videoOnly,
+    ]);
+  } else if (!pulse && hasCaption) {
+    const filter =
+      `[0:v]${[...pre, zoomChain].filter(Boolean).join(",")}[zoomed];` +
+      captionOverlayGraph("[zoomed]", 1, outDur, `[capped];`) +
+      `[capped]${endFades},trim=duration=${outDurS},setpts=PTS-STARTPTS[vout]`;
+    await run("ffmpeg", [
+      "-y",
+      "-ss",
+      seg.start.toFixed(3),
+      "-i",
+      rawPath,
+      "-t",
+      dur.toFixed(3),
+      "-loop",
+      "1",
+      "-t",
+      outDurS,
+      "-i",
+      captionPng,
+      "-filter_complex",
+      filter,
+      "-map",
+      "[vout]",
+      "-an",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-r",
+      "30",
+      "-fps_mode",
+      "cfr",
+      "-t",
+      outDurS,
       videoOnly,
     ]);
   } else {
@@ -666,7 +643,8 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
     const x0 = Math.max(0, pulse.ax - 140);
     const y0 = Math.max(0, pulse.ay - 100);
     const moveT = Math.min(0.45, pulse.t0);
-    const filter =
+    const captionIdx = 3;
+    let filter =
       `[0:v]${pre.join(",")}[base];` +
       `[1:v]format=rgba,scale=36:36[cur];` +
       `[base][cur]overlay=` +
@@ -679,9 +657,16 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       `[aimed][ring]overlay=` +
       `x='${pulse.ax}-w/2':y='${pulse.ay}-h/2':` +
       `enable='between(t\\,${t0}\\,${t1})':format=auto[marked];` +
-      `[marked]${postZoom},trim=duration=${outDurS},setpts=PTS-STARTPTS[vout]`;
+      `[marked]${zoomChain}[zoomed];`;
+    if (hasCaption) {
+      filter +=
+        captionOverlayGraph("[zoomed]", captionIdx, outDur, `[capped];`) +
+        `[capped]${endFades},trim=duration=${outDurS},setpts=PTS-STARTPTS[vout]`;
+    } else {
+      filter += `[zoomed]${endFades},trim=duration=${outDurS},setpts=PTS-STARTPTS[vout]`;
+    }
 
-    await run("ffmpeg", [
+    const args = [
       "-y",
       "-ss",
       seg.start.toFixed(3),
@@ -701,6 +686,11 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       outDurS,
       "-i",
       CLICK_RING_PNG,
+    ];
+    if (hasCaption) {
+      args.push("-loop", "1", "-t", outDurS, "-i", captionPng);
+    }
+    args.push(
       "-filter_complex",
       filter,
       "-map",
@@ -717,7 +707,8 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-t",
       outDurS,
       videoOnly,
-    ]);
+    );
+    await run("ffmpeg", args);
   }
 
   await buildSegmentAudio(audioWav, outDur, pulse);

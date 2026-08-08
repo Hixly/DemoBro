@@ -1,9 +1,12 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const W = 1920;
 const H = 1080;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const INTER_FONT = path.resolve(__dirname, "../assets/fonts/Inter-Regular.ttf");
 
 function escapeHtml(value) {
   return String(value)
@@ -85,6 +88,62 @@ function titleCardHtml({ title, description, liveUrl, badges }) {
 </html>`;
 }
 
+/**
+ * Full-frame transparent lower-third caption: one dark pill, white Inter type.
+ * Bar is pinned to a fixed Y so every beat lands in the same spot.
+ */
+function captionCardHtml({ text, fontUrl }) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @font-face {
+      font-family: "Inter";
+      src: url("${fontUrl}") format("truetype");
+      font-weight: 400 600;
+      font-style: normal;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; width: ${W}px; height: ${H}px; overflow: hidden;
+      background: transparent;
+      font-family: "Inter", system-ui, sans-serif;
+    }
+    .stage {
+      position: relative;
+      width: 100%; height: 100%;
+      background: transparent;
+    }
+    .caption {
+      position: absolute;
+      left: 50%;
+      bottom: 80px;
+      transform: translateX(-50%);
+      max-width: 1600px;
+      padding: 18px 44px;
+      border-radius: 999px;
+      background: rgba(10, 10, 12, 0.78);
+      color: #ffffff;
+      font-size: 38px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="caption">${escapeHtml(text)}</div>
+  </div>
+</body>
+</html>`;
+}
+
 function outroCardHtml({ repoUrl, logoUrl }) {
   const repo = String(repoUrl || "").replace(/^https?:\/\//, "");
   return `<!DOCTYPE html>
@@ -144,18 +203,29 @@ function outroCardHtml({ repoUrl, logoUrl }) {
 }
 
 /**
- * Render a branded card PNG via Playwright (exact logo + Fredoka).
- * Logo is inlined as a data URL so Chromium can load the real JPG bytes
- * without file:// restrictions under setContent.
+ * Render a branded card PNG via Playwright.
+ * Title/outro use Fredoka + inlined logo; caption uses bundled Inter on a
+ * transparent full-frame canvas (lower-third pill already positioned).
  */
 export async function renderCardPng(outPath, kind, data, logoPath) {
   await mkdir(path.dirname(outPath), { recursive: true });
-  const bytes = await readFile(logoPath);
-  const logoUrl = `data:image/jpeg;base64,${bytes.toString("base64")}`;
-  const html =
-    kind === "title"
-      ? titleCardHtml({ ...data, logoUrl })
-      : outroCardHtml({ ...data, logoUrl });
+
+  let html;
+  if (kind === "caption") {
+    const fontBytes = await readFile(INTER_FONT);
+    const fontUrl = `data:font/ttf;base64,${fontBytes.toString("base64")}`;
+    html = captionCardHtml({
+      text: String(data?.text ?? "").trim(),
+      fontUrl,
+    });
+  } else {
+    const bytes = await readFile(logoPath);
+    const logoUrl = `data:image/jpeg;base64,${bytes.toString("base64")}`;
+    html =
+      kind === "title"
+        ? titleCardHtml({ ...data, logoUrl })
+        : outroCardHtml({ ...data, logoUrl });
+  }
 
   const browser = await chromium.launch({
     headless: true,
@@ -166,7 +236,9 @@ export async function renderCardPng(outPath, kind, data, logoPath) {
       viewport: { width: W, height: H },
       deviceScaleFactor: 1,
     });
-    await page.setContent(html, { waitUntil: "networkidle" });
+    await page.setContent(html, {
+      waitUntil: kind === "caption" ? "load" : "networkidle",
+    });
     await page.evaluate(async () => {
       await document.fonts.ready;
     });
@@ -204,11 +276,11 @@ export async function renderCardPng(outPath, kind, data, logoPath) {
         return img && img.complete && img.naturalWidth > 0;
       });
     }
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(kind === "caption" ? 120 : 300);
     await page.screenshot({
       path: outPath,
       type: "png",
-      omitBackground: false,
+      omitBackground: kind === "caption",
     });
   } finally {
     await browser.close();
