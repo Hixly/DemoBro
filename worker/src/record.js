@@ -3,6 +3,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { assertSafePublicUrl } from "./ssrf.js";
 import { resolveStep } from "./resolve-selectors.js";
+import { dismissEntryBlockers } from "./dismiss-blockers.js";
 
 const VIEWPORT = { width: 1920, height: 1080 };
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
@@ -56,25 +57,35 @@ function extractTypedValue(description) {
 
 /** @returns {StepKind} */
 function classifyStepKind(step, tag, desc) {
-  if (
-    looksLikeUrl(step.targetHint) ||
-    /^open\b/i.test(step.description) ||
-    /^visit\b/i.test(step.description)
-  ) {
+  // Absolute URL → navigate. "Open/Visit …" with a selector is a click.
+  if (looksLikeUrl(step.targetHint)) {
     return "nav";
   }
+  const wantsType = /\b(type|enter|fill|write|paste|search)\b/.test(desc);
+  if (tag === "input" || tag === "textarea" || (wantsType && tag !== "button")) {
+    return "type";
+  }
+  // "Pause & tap to sample" / "Tap to view…" are button actions, not soft pauses.
+  const actionable =
+    /\b(tap|click|sample|toggle|press|select|upload|share|copy|save|detect|generat|open|freeze)\b/.test(
+      desc,
+    );
+  if (actionable && (tag === "button" || tag === "a" || tag === "summary")) {
+    return "click";
+  }
+  const headingTag = /^h[1-6]$/.test(tag);
   if (
     desc.includes("watch") ||
     desc.includes("point") ||
     desc.includes("pause") ||
     desc.includes("land") ||
+    desc.includes("highlight") ||
+    desc.includes("headline") ||
+    desc.includes("overview") ||
+    headingTag ||
     tag === "video"
   ) {
     return "pause";
-  }
-  const wantsType = /\b(type|enter|fill|write|paste|search)\b/.test(desc);
-  if (tag === "input" || tag === "textarea" || (wantsType && tag !== "button")) {
-    return "type";
   }
   return "click";
 }
@@ -132,9 +143,14 @@ function isNativePermissionStep(step) {
  * @param {import('playwright').Page} page
  * @param {string} hint
  */
-function locatorForHint(page, hint) {
+async function locatorForHint(page, hint) {
   const trimmed = hint.trim();
   if (!trimmed) return page.locator("body");
+
+  // Bare textarea/input → largest visible field (not a tiny search box).
+  if (trimmed === "textarea" || trimmed === "input") {
+    return largestEditable(page, trimmed);
+  }
 
   // Comma-separated fallbacks: pick the first listed selector (most specific).
   // Avoid Playwright OR across `:has-text()` matching giant containers.
@@ -175,6 +191,62 @@ async function moveMouseVisibly(page, locator) {
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
   await page.mouse.move(x, y, { steps: 28 });
+}
+
+/** Prefer the largest visible editable for bare textarea/input hints. */
+async function largestEditable(page, tag) {
+  try {
+    const idx = await page.locator(tag).evaluateAll((nodes) => {
+      let bestIdx = 0;
+      let bestArea = 0;
+      nodes.forEach((n, i) => {
+        const r = n.getBoundingClientRect();
+        const style = window.getComputedStyle(n);
+        if (style.visibility === "hidden" || style.display === "none") return;
+        const area = r.width * r.height;
+        if (area > bestArea) {
+          bestArea = area;
+          bestIdx = i;
+        }
+      });
+      return bestIdx;
+    });
+    return page.locator(tag).nth(idx || 0);
+  } catch {
+    return page.locator(tag).first();
+  }
+}
+
+/** Drag a simple shape on the largest visible canvas, if any. */
+async function drawSampleOnCanvas(page) {
+  try {
+    const canvases = page.locator("canvas");
+    const n = await canvases.count();
+    if (!n) return;
+    let best = null;
+    for (let i = 0; i < n; i += 1) {
+      const box = await canvases.nth(i).boundingBox().catch(() => null);
+      if (!box || box.width < 200 || box.height < 200) continue;
+      const area = box.width * box.height;
+      if (!best || area > best.area) best = { box, area };
+    }
+    if (!best) return;
+    const { box } = best;
+    const x0 = box.x + box.width * 0.35;
+    const y0 = box.y + box.height * 0.35;
+    const x1 = box.x + box.width * 0.62;
+    const y1 = box.y + box.height * 0.58;
+    await page.mouse.move(x0, y0, { steps: 12 });
+    await page.mouse.down();
+    await page.mouse.move(x1, y1, { steps: 24 });
+    await page.mouse.up();
+    await sleep(400);
+    console.log("[record] canvas sample stroke");
+  } catch (err) {
+    console.warn(
+      `[record] canvas stroke skipped: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }
 
 /**
@@ -228,16 +300,16 @@ export async function executeStep(page, step, index) {
   }
 
   try {
-    if (looksLikeUrl(step.targetHint) || /^open\b/i.test(step.description)) {
-      const url = looksLikeUrl(step.targetHint)
-        ? step.targetHint
-        : page.url();
-      await safeGoto(page, looksLikeUrl(step.targetHint) ? step.targetHint : url);
+    // Only goto when the hint itself is a URL. Descriptions like "Open the app"
+    // with a[href="/app"] must fall through to click — otherwise we no-op on
+    // the current page and the agent never reaches the product.
+    if (looksLikeUrl(step.targetHint)) {
+      await safeGoto(page, step.targetHint);
       await sleep(SETTLE_MS + 1_000);
       return { ...base, stepKind: "nav", status: "succeeded" };
     }
 
-    const locator = locatorForHint(page, step.targetHint);
+    const locator = await locatorForHint(page, step.targetHint);
     await locator.waitFor({ state: "visible", timeout: STEP_TIMEOUT_MS });
     await locator.scrollIntoViewIfNeeded().catch(() => {});
     await moveMouseVisibly(page, locator);
@@ -277,9 +349,27 @@ export async function executeStep(page, step, index) {
       };
     }
 
-    await locator.click({ timeout: STEP_TIMEOUT_MS });
+    // Prefer force when a sheet/modal may intercept (common after "view details").
+    try {
+      await locator.click({ timeout: STEP_TIMEOUT_MS });
+    } catch {
+      await locator.click({ timeout: STEP_TIMEOUT_MS, force: true });
+    }
+
+    // Canvas apps: selecting a shape/draw tool does nothing visible unless we
+    // actually stroke on the canvas (Excalidraw, tldraw, etc.).
+    const toolBlob = `${desc} ${step.targetHint || ""}`;
+    if (
+      /\b(rectangle|ellipse|diamond|arrow|line|freedraw|draw|pencil|brush|shape)\b/i.test(
+        toolBlob,
+      )
+    ) {
+      await drawSampleOnCanvas(page);
+    }
+
     // Generate/submit often reveals result UI — wait for it before the next beat.
     const looksSubmit = /generat|submit|send|create|draft/i.test(desc);
+    const opensSheet = /detail|sample|share|history|save/i.test(desc);
     if (looksSubmit) {
       await Promise.race([
         page
@@ -290,6 +380,8 @@ export async function executeStep(page, step, index) {
         sleep(SETTLE_MS + 2_400),
       ]);
       await sleep(800);
+    } else if (opensSheet) {
+      await sleep(SETTLE_MS + 1_400);
     } else {
       await sleep(SETTLE_MS + 900);
     }
@@ -364,6 +456,8 @@ export async function recordStoryboard(options) {
     await safeGoto(page, safe.url.toString());
     await sleep(SETTLE_MS);
     await sleep(1_000); // SPA hydration beat before step 1
+    await dismissEntryBlockers(page);
+    await sleep(300);
 
     // Keep EVERY planned step. Resolve each one just-in-time against the live
     // DOM after prior steps have run — so Analyze/post-Generate UI can appear.

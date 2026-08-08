@@ -123,6 +123,7 @@ export function planSegments(timeline, totalDurationSec) {
         actionPoint: null,
         stepKind: "pause",
         description: "",
+        caption: "",
       },
     ];
   }
@@ -153,6 +154,7 @@ export function planSegments(timeline, totalDurationSec) {
       actionPoint: cleaned.actionPoint,
       stepKind: step.stepKind ?? "pause",
       description: step.description ?? "",
+      caption: step.caption ?? "",
     });
   }
 
@@ -166,6 +168,7 @@ export function planSegments(timeline, totalDurationSec) {
           actionPoint: null,
           stepKind: "pause",
           description: "",
+          caption: "",
         },
       ];
 }
@@ -219,13 +222,16 @@ function sanitizeTarget(box, actionPoint) {
   return { box: b, actionPoint: ap };
 }
 
-/** True for short wide CTAs (Generate). Expanded result cards must not match. */
+/**
+ * Wide bottom chrome (Generate CTAs, color name bars, sheets). Aggressive
+ * zoom here crops the product and parks the camera on footers.
+ */
 function isWideBottomCta(box) {
   return (
     !!box &&
     box.w >= W * 0.32 &&
-    box.h <= 90 &&
-    box.y + box.h / 2 > H * 0.62
+    box.h <= 160 &&
+    box.y + box.h / 2 > H * 0.58
   );
 }
 
@@ -251,6 +257,17 @@ export function shortenCaption(description) {
     .replace(/\.$/, "");
   if (!s) return "";
 
+  // Product-action captions that otherwise read as stage directions.
+  if (/\b(pause\s+and\s+tap|tap\s+to\s+sample|sample\s+(a\s+)?color)\b/i.test(s)) {
+    return "Sample a color";
+  }
+  if (/\b(view\s+color\s+details|color\s+details)\b/i.test(s)) {
+    return "View color details";
+  }
+  if (/^(pause\s+on\s+hero|land\s+on\s+hero|hero\s+pause)/i.test(s)) {
+    return "Land on hero";
+  }
+
   const visit = s.match(/^(visit|open|go to|navigate to)\s+(?:the\s+)?(.+)/i);
   if (visit) {
     const rest = visit[2].split(/\s+/).slice(0, 5).join(" ");
@@ -266,7 +283,7 @@ export function shortenCaption(description) {
     s = `Type ${rest}`;
   } else if (/^(click|tap|press|select)\s+/i.test(s)) {
     s = s
-      .replace(/^(click|tap|press|select)\s+/i, "")
+      .replace(/^(click|tap|press|select)\s+(to\s+)?/i, "")
       .split(/\s+/)
       .slice(0, 6)
       .join(" ");
@@ -305,9 +322,10 @@ function buildZoomFilter(box, outDur) {
     // Wide bottom CTAs (Generate): after click the footer slides up into that Y.
     // Keep the camera on the form, not Coming Soon.
     if (isWideBottomCta(box)) {
-      zoomPeak = Math.min(zoomPeak, 1.22);
+      zoomPeak = Math.min(zoomPeak, 1.14);
       cx = W / 2;
-      cy = Math.min(H * 0.46, Math.max(H * 0.38, box.y - 200));
+      // Keep the product surface in frame — not a crushed footer strip.
+      cy = Math.min(H * 0.52, Math.max(H * 0.42, box.y - 260));
     }
   }
   console.log(
@@ -401,8 +419,24 @@ function clickPulsePlan(seg, outDur) {
   return { kind, ax, ay, t0, t1 };
 }
 
-/** Rewrite weak/misleading captions when capture soft-failed. */
+/**
+ * Prefer viewer-facing `caption` from the planner; fall back to shortened
+ * description only when caption is missing.
+ */
 function captionCopyForSeg(seg) {
+  const viewer = String(seg.caption ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?…,:;]+$/g, "");
+  if (
+    viewer &&
+    !/^(click|tap|visit|land|scroll|select|open)\b/i.test(viewer) &&
+    !/[#.\[\]=]|:has-text|href=/i.test(viewer)
+  ) {
+    const words = viewer.split(/\s+/).slice(0, 6).join(" ");
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
   const raw = seg.description || "";
   const short = shortenCaption(raw);
   if (!short) return "";

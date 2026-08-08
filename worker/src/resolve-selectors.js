@@ -19,10 +19,18 @@ const PROBE_TIMEOUT_MS = 1_200;
 /** Steps that should survive even with no matching control (they just pause). */
 function isPauseStep(step) {
   const blob = `${step.description}`.toLowerCase();
+  // "Pause & tap to sample" is an action button, not a soft land/pause beat.
+  if (
+    /\b(tap|click|sample|toggle|press|select|upload|share|copy|save|detect)\b/.test(
+      blob,
+    )
+  ) {
+    return false;
+  }
   return (
     blob.includes("land") ||
     blob.includes("hero") ||
-    blob.includes("pause") ||
+    /\bpause\b/.test(blob) ||
     blob.includes("watch") ||
     blob.includes("scroll") ||
     blob.includes("overview") ||
@@ -31,16 +39,19 @@ function isPauseStep(step) {
   );
 }
 
-/** Navigation steps are handled by record.js directly — leave them alone. */
+/**
+ * True only when the hint is an absolute http(s) URL.
+ * "Open the app" / "Visit X" with a CSS selector must resolve+click — never
+ * short-circuit as a fake navigation that reloads the current page.
+ */
 function isNavigationStep(step) {
   const hint = (step.targetHint || "").trim();
   try {
     const u = new URL(hint);
-    if (u.protocol === "http:" || u.protocol === "https:") return true;
+    return u.protocol === "http:" || u.protocol === "https:";
   } catch {
-    /* not a url */
+    return false;
   }
-  return /^open\b/i.test(step.description || "") || /^visit\b/i.test(step.description || "");
 }
 
 /** Camera/permission steps are granted via context flags, not clicked. */
@@ -101,6 +112,7 @@ export async function enumerateElements(page) {
     const seen = new Set();
     const push = (el, role) => {
       if (out.length >= 120) return;
+      const ariaLabel = clean(el.getAttribute("aria-label") || "");
       const name = accessibleName(el);
       const testId = el.getAttribute("data-testid") || "";
       const id = el.id || "";
@@ -116,6 +128,7 @@ export async function enumerateElements(page) {
         tag: el.tagName.toLowerCase(),
         role: role || el.getAttribute("role") || "",
         name,
+        ariaLabel,
         testId,
         id,
         href,
@@ -143,20 +156,35 @@ export async function enumerateElements(page) {
   return raw.map((el) => ({
     ...el,
     name: normalizeLabel(el.name),
+    ariaLabel: normalizeLabel(el.ariaLabel || ""),
   }));
+}
+
+function escapeAttr(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 /** Build a Playwright-usable selector string for a real element. */
 export function selectorFor(el) {
   if (el.testId) return `[data-testid="${el.testId}"]`;
   if (el.id && /^[A-Za-z][\w:-]*$/.test(el.id)) return `#${el.id}`;
-  // Prefer stable href over long / garbled visible text.
+  const aria = normalizeLabel(el.ariaLabel || "");
+  const name = normalizeLabel(el.name);
+
+  // Prefer href, but disambiguate duplicate destinations (nav "Get Started"
+  // vs hero "Start Detecting Colors" both → /app) with visible text.
   if (el.href && el.href.startsWith("/") && el.href.length < 80) {
+    if (name) {
+      return `a[href="${el.href}"]:has-text("${escapeAttr(name.slice(0, 40))}")`;
+    }
     return `a[href="${el.href}"]`;
   }
-  const name = normalizeLabel(el.name);
+  // Icon buttons often expose only aria-label — :has-text() will never match.
+  if (aria) {
+    return `${el.tag}[aria-label="${escapeAttr(aria.slice(0, 80))}"]`;
+  }
   if (name) {
-    const short = name.slice(0, 40).replace(/"/g, '\\"');
+    const short = escapeAttr(name.slice(0, 40));
     return `${el.tag}:has-text("${short}")`;
   }
   return el.tag;
@@ -202,16 +230,38 @@ function scoreMatch(step, el) {
   return Math.min(1, score);
 }
 
-async function probe(page, selector) {
+async function probeLocator(locator) {
   try {
-    await page
-      .locator(selector)
-      .first()
-      .waitFor({ state: "visible", timeout: PROBE_TIMEOUT_MS });
+    await locator.waitFor({ state: "visible", timeout: PROBE_TIMEOUT_MS });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Probe a selector, with recovery for :has-text() against aria-label-only
+ * icon buttons (common in camera / tool UIs).
+ * @returns {Promise<string|null>} working selector, or null
+ */
+async function probeSelector(page, selector) {
+  if (await probeLocator(page.locator(selector).first())) return selector;
+
+  const hasText = selector.match(/^([a-z0-9_-]+):has-text\("([^"]+)"\)$/i);
+  if (hasText) {
+    const tag = hasText[1];
+    const text = hasText[2];
+    const ariaSel = `${tag}[aria-label="${escapeAttr(text)}"]`;
+    if (await probeLocator(page.locator(ariaSel).first())) return ariaSel;
+    const role = tag === "a" ? "link" : "button";
+    try {
+      const byRole = page.getByRole(role, { name: text }).first();
+      if (await probeLocator(byRole)) return ariaSel;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
 }
 
 /**
@@ -239,17 +289,24 @@ export async function resolveStep(page, step, opts = {}) {
   }
 
   // 1. Existing selector already visible and not claimed?
-  if (
-    step.targetHint &&
-    !claimed.has(step.targetHint) &&
-    (await probe(page, step.targetHint))
-  ) {
-    claimed.add(step.targetHint);
-    return {
-      step,
-      skip: false,
-      report: { description: step.description, resolution: "verified" },
-    };
+  if (step.targetHint && !claimed.has(step.targetHint)) {
+    const verified = await probeSelector(page, step.targetHint);
+    if (verified) {
+      claimed.add(verified);
+      const repairedHint = verified !== step.targetHint;
+      return {
+        step: repairedHint ? { ...step, targetHint: verified } : step,
+        skip: false,
+        report: repairedHint
+          ? {
+              description: step.description,
+              resolution: "repaired",
+              from: step.targetHint,
+              to: verified,
+            }
+          : { description: step.description, resolution: "verified" },
+      };
+    }
   }
 
   // 2. Re-enumerate current DOM and repair.
@@ -287,8 +344,9 @@ export async function resolveStep(page, step, opts = {}) {
   for (const candidate of ranked.slice(0, 8)) {
     const sel = selectorFor(candidate.el);
     if (claimed.has(sel)) continue;
-    if (await probe(page, sel)) {
-      repaired = { sel, name: candidate.el.name };
+    const working = await probeSelector(page, sel);
+    if (working) {
+      repaired = { sel: working, name: candidate.el.name };
       break;
     }
   }
@@ -309,8 +367,12 @@ export async function resolveStep(page, step, opts = {}) {
 
   // 3. Last resorts — pause fallback, else skip (do NOT drop earlier in the tour).
   if (isPauseStep(step)) {
+    // Some app shells hide <body> visually; prefer video/main when present.
+    let pauseHint = "body";
+    if (await probeLocator(page.locator("video").first())) pauseHint = "video";
+    else if (await probeLocator(page.locator("main").first())) pauseHint = "main";
     return {
-      step: { ...step, targetHint: "body" },
+      step: { ...step, targetHint: pauseHint },
       skip: false,
       report: { description: step.description, resolution: "fallback-pause" },
     };
