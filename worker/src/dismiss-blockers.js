@@ -17,9 +17,15 @@ const CONSENT_RE =
 const DISMISS_RE =
   /^(close|dismiss|skip|no thanks|maybe later|not now|later|continue without|dismiss all)$/i;
 
-// Prefer stay/free/open-source paths — never the upsell/"Open To Diagram" fork.
+/**
+ * Chooser modals only (e.g. "Stay on JSON Crack" vs upsell).
+ * Must NOT match bare footer "open source" / sponsor links — those leave the site.
+ */
 const CHOOSER_STAY_RE =
-  /stay on\b|^stay$|stay here|open source|continue (here|free|with free)|use (the )?(free|web|browser)|start free|try free|no thanks|maybe later/i;
+  /stay on\b|^stay$|stay here|continue (here|free|with free)|continue with (the )?open.?source|use (the )?(free|web|browser|open.?source)( (version|edition|app))?|start free|try free|no thanks|maybe later|keep using|remain here/i;
+
+const DIALOG_SCOPE =
+  '[role="dialog"], [role="alertdialog"], [aria-modal="true"], .modal, [class*="modal"]';
 
 async function tryClickLocator(locator, label, clicked) {
   try {
@@ -35,6 +41,61 @@ async function tryClickLocator(locator, label, clicked) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Click a same-origin (or hash/#) chooser control inside a dialog.
+ * Rejects off-site links that used to match loose "open source" patterns.
+ */
+async function tryClickChooserInDialogs(page, role, clicked) {
+  const dialogs = page.locator(DIALOG_SCOPE);
+  const n = await dialogs.count().catch(() => 0);
+  if (n < 1) return false;
+
+  const origin = (() => {
+    try {
+      return new URL(page.url()).origin;
+    } catch {
+      return "";
+    }
+  })();
+
+  for (let i = 0; i < Math.min(n, 4); i += 1) {
+    const dialog = dialogs.nth(i);
+    const visible = await dialog.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    const candidates = dialog.getByRole(role, { name: CHOOSER_STAY_RE });
+    const count = await candidates.count().catch(() => 0);
+    for (let j = 0; j < Math.min(count, 6); j += 1) {
+      const el = candidates.nth(j);
+      const elVisible = await el.isVisible().catch(() => false);
+      if (!elVisible) continue;
+
+      if (role === "link") {
+        const href = await el.getAttribute("href").catch(() => null);
+        if (href) {
+          try {
+            const abs = new URL(href, page.url());
+            if (abs.origin !== origin && abs.protocol !== "javascript:") {
+              continue; // never follow off-site chooser links
+            }
+          } catch {
+            continue;
+          }
+        }
+      }
+
+      try {
+        await el.click({ timeout: CLICK_TIMEOUT_MS });
+        clicked.push(`chooser:${role}`);
+        return true;
+      } catch {
+        /* try next */
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -90,31 +151,18 @@ async function dismissRound(page, clicked) {
     did = true;
   }
 
-  // 4) Chooser modals — prefer free/open-source/stay-on-product paths.
-  if (
-    await tryClickLocator(
-      page.getByRole("button", { name: CHOOSER_STAY_RE }),
-      "chooser:button",
-      clicked,
-    )
-  ) {
+  // 4) Chooser modals ONLY inside dialogs — never page-wide "open source" links.
+  if (await tryClickChooserInDialogs(page, "button", clicked)) {
     did = true;
   }
-  if (
-    !did &&
-    (await tryClickLocator(
-      page.getByRole("link", { name: CHOOSER_STAY_RE }),
-      "chooser:link",
-      clicked,
-    ))
-  ) {
+  if (!did && (await tryClickChooserInDialogs(page, "link", clicked))) {
     did = true;
   }
 
   // 5) Dialog-scoped primary that looks like continue/accept (not delete).
   if (!did) {
     const dialogBtn = page
-      .locator('[role="dialog"] button, [role="alertdialog"] button')
+      .locator(`${DIALOG_SCOPE} button`)
       .filter({ hasText: CONSENT_RE });
     if (await tryClickLocator(dialogBtn, "dialog:consent", clicked)) {
       did = true;
@@ -124,7 +172,7 @@ async function dismissRound(page, clicked) {
   // 6) Soft Escape only if no safer button matched this round.
   if (!did) {
     const dialogVisible = await page
-      .locator('[role="dialog"], [role="alertdialog"]')
+      .locator('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')
       .first()
       .isVisible()
       .catch(() => false);
@@ -145,6 +193,14 @@ async function dismissRound(page, clicked) {
  */
 export async function dismissEntryBlockers(page) {
   const clicked = [];
+  const startUrl = page.url();
+  let startOrigin = "";
+  try {
+    startOrigin = new URL(startUrl).origin;
+  } catch {
+    /* ignore */
+  }
+
   for (let round = 0; round < 3; round += 1) {
     const did = await dismissRound(page, clicked);
     if (!did) break;
@@ -152,6 +208,24 @@ export async function dismissEntryBlockers(page) {
     await page
       .waitForLoadState("domcontentloaded", { timeout: 3_000 })
       .catch(() => {});
+
+    // If a dismiss click navigated off-origin, bounce back.
+    try {
+      const now = new URL(page.url());
+      if (startOrigin && now.origin !== startOrigin) {
+        console.warn(
+          `[dismiss] off-origin after ${clicked[clicked.length - 1]} → ${now.href}; restoring ${startUrl}`,
+        );
+        await page.goto(startUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 15_000,
+        });
+        clicked.push("restore-origin");
+        break;
+      }
+    } catch {
+      /* ignore */
+    }
   }
   if (clicked.length) {
     console.log(`[dismiss] cleared blockers: ${clicked.join(" → ")}`);

@@ -21,6 +21,7 @@ const SETTLE_MS = 1800;
 const STEP_TIMEOUT_MS = 8000;
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
 const MAX_BEATS = 6;
+const DOCS_BRIEF_MAX_BEATS = 3;
 const MAX_PAGES = 4;
 
 const PAGE_PLAN_SCHEMA = {
@@ -237,6 +238,233 @@ function isCameraHeavyProduct({ title, description, elements, currentUrl }) {
   });
 }
 
+/** Interactive surface on a docs/marketing site (playground, examples, try-it). */
+function pickPlayground(elements, claimed = new Set(), baseUrl = "") {
+  const scored = (elements || [])
+    .filter((el) => el.visible && !claimed.has(selectorFor(el)))
+    .map((el) => {
+      const name = String(el.name || "").toLowerCase();
+      const href = String(el.href || "").toLowerCase();
+      const path = hrefPath(el.href, baseUrl).toLowerCase();
+      const blob = `${name} ${href} ${path}`;
+      const hint = selectorFor(el);
+      let score = 0;
+      if (
+        /\/(examples?|playground|sandbox|try|demo|tutorial|repl)(\/|$)/.test(
+          path,
+        )
+      ) {
+        score += 8;
+      }
+  if (
+    /^(examples?|playground|tutorial|demos?|try it|sandbox)$/.test(
+      name.trim(),
+    )
+  ) {
+    score += 8;
+  }
+  if (
+    /\b(examples?|playground|sandbox|try it|try online|live demo|online editor|runnable|tutorial)\b/.test(
+      name,
+    )
+  ) {
+    score += 6;
+  }
+  if (/\b(demo|tutorial|playground|examples?)\b/.test(blob)) score += 2;
+  // Prefer live playground/examples over long tutorial curricula.
+  if (/\/(playground|examples?|sandbox|repl)(\/|$)/.test(path)) score += 3;
+  if (/\/(docs?|reference|api|essays|guide)(\/|$)/.test(path)) score -= 5;
+  if (el.tag === "a" || el.tag === "button") score += 1;
+  return { hint, name, score };
+    })
+    .filter((c) => c.score >= 6)
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  if (!best) return null;
+  return {
+    description: /example/i.test(best.name)
+      ? "See live examples"
+      : /play|sandbox|try|tutorial/i.test(best.name)
+        ? "Open the playground"
+        : best.name.slice(0, 36) || "Try it live",
+    targetHint: best.hint,
+    caption: "Try it live",
+  };
+}
+
+/** Docs TOC / sidebar clicks that produce walls of text — never focal beats. */
+function isDocsSidebarBeat(beat) {
+  const hint = String(beat?.targetHint || "");
+  const desc = String(beat?.description || "").toLowerCase();
+  const blob = `${desc} ${hint.toLowerCase()}`;
+  if (/example|playground|sandbox|try it|demo|hero|land|home/i.test(blob)) {
+    return false;
+  }
+  if (/\/(docs?|reference|api|essays|guide)\b/i.test(hint)) return true;
+  if (
+    /\b(sidebar|table of contents|\btoc\b|reference|attributes?|triggers?|essays?)\b/i.test(
+      desc,
+    )
+  ) {
+    return true;
+  }
+  // Short prose nav labels ("AJAX", "triggers") that leave into docs.
+  if (
+    /a:has-text\("[^"]{1,28}"\)/i.test(hint) &&
+    /\b(section|docs?|reference|ajax|css|hyperscript|attributes?)\b/i.test(desc)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Classify site → camera | docs | product.
+ * Uses hydrated DOM + URL + repo copy — no per-site allowlists.
+ */
+function hrefPath(href, baseUrl) {
+  try {
+    return new URL(href, baseUrl || "https://example.com").pathname;
+  } catch {
+    return String(href || "");
+  }
+}
+
+function classifySiteType({ title, description, elements, currentUrl }) {
+  if (isCameraHeavyProduct({ title, description, elements, currentUrl })) {
+    return {
+      type: "camera",
+      reason: "camera/hardware signals",
+      playground: null,
+    };
+  }
+
+  const els = elements || [];
+  const meta = `${title || ""} ${description || ""} ${currentUrl || ""}`.toLowerCase();
+  let docsScore = 0;
+  let productScore = 0;
+
+  if (/\/(docs?|reference|api|guide|manual|essays)\b/i.test(currentUrl || "")) {
+    docsScore += 3;
+  }
+  if (
+    /\b(documentation|docs|reference|library|framework|hypermedia|sdk|javascript library)\b/i.test(
+      meta,
+    )
+  ) {
+    docsScore += 2;
+  }
+  if (/\b(high.?power tools for html|html over the wire)\b/i.test(meta)) {
+    docsScore += 2;
+  }
+
+  const hrefs = els.filter((el) => el.visible && el.href);
+  const docsLinks = hrefs.filter((el) => {
+    const path = hrefPath(el.href, currentUrl);
+    // Same-origin docs/reference only — ignore MDN / external doc links.
+    try {
+      const abs = new URL(el.href, currentUrl || "https://example.com");
+      const cur = new URL(currentUrl || abs.href);
+      if (abs.origin !== cur.origin) return false;
+    } catch {
+      /* keep */
+    }
+    return /\/(docs?|reference|api|essays|guide|attributes?)(\/|$)/i.test(path);
+  }).length;
+  if (docsLinks >= 2) docsScore += 2;
+  if (docsLinks >= 3) docsScore += 2;
+  if (docsLinks >= 8) docsScore += 2;
+
+  const shortNav = hrefs.filter((el) => {
+    const words = String(el.name || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const path = hrefPath(el.href, currentUrl);
+    return words.length > 0 && words.length <= 2 && path.startsWith("/");
+  }).length;
+  if (shortNav >= 10) docsScore += 2;
+  if (shortNav >= 20) docsScore += 1;
+
+  const headings = els.filter(
+    (el) => el.visible && /^h[1-6]$/.test(el.tag),
+  ).length;
+  if (headings >= 8) docsScore += 1;
+
+  // Code-block / pre-heavy pages are usually docs (signal via many code-y links).
+  const codey = hrefs.filter((el) =>
+    /\b(hx-|x-data|@click|npm i|cdn\.|install)\b/i.test(
+      `${el.name || ""} ${el.href || ""}`,
+    ),
+  ).length;
+  if (codey >= 2) docsScore += 1;
+
+  const appControls = els.filter((el) => {
+    if (!el.visible) return false;
+    // Ignore search/newsletter chrome — not a product loop.
+    if (el.tag === "textarea") return true;
+    if (el.tag === "input" || el.tag === "select") {
+      const name = String(el.name || "").toLowerCase();
+      if (/search|email|newsletter|subscribe|password|login/.test(name)) {
+        return false;
+      }
+      return true;
+    }
+    return /\b(generat|send|submit|draw|upload|sample|share|export|run|compose|freeze)\b/i.test(
+      el.name || "",
+    );
+  }).length;
+  if (appControls >= 3) productScore += 4;
+  if (/\/(app|editor|dashboard|studio)\b/i.test(currentUrl || "")) {
+    productScore += 3;
+  }
+  // Strong product-entry CTAs beat soft docs signals on SaaS landings.
+  const productEntryLinks = hrefs.filter((el) => {
+    const path = hrefPath(el.href, currentUrl);
+    const name = String(el.name || "").toLowerCase();
+    return (
+      /\/(app|editor|dashboard|studio|workspace)(\/|$)/i.test(path) ||
+      /\b(open (json )?editor|launch app|start detecting|try (it )?free|get started)\b/i.test(
+        name,
+      )
+    );
+  }).length;
+  if (productEntryLinks >= 1) productScore += 4;
+  if (productEntryLinks >= 2) productScore += 2;
+  if (
+    /\b(saas|dashboard|editor|workspace)\b/i.test(meta) &&
+    appControls >= 1
+  ) {
+    productScore += 2;
+  }
+
+  const playground = pickPlayground(els, new Set(), currentUrl);
+  // Already on an examples/playground URL → treat as product surface.
+  if (
+    /\/(examples?|playground|sandbox|tutorial|play)\b/i.test(currentUrl || "")
+  ) {
+    return {
+      type: "product",
+      reason: "already on interactive/examples surface",
+      playground,
+    };
+  }
+
+  // Docs only when clearly ahead of product signals (avoid SaaS false positives).
+  if (docsScore >= 5 && docsScore > productScore) {
+    return {
+      type: "docs",
+      reason: `docsScore=${docsScore} productScore=${productScore}`,
+      playground,
+    };
+  }
+  return {
+    type: "product",
+    reason: `docsScore=${docsScore} productScore=${productScore}`,
+    playground,
+  };
+}
+
 /** Nav/CTA that would open a live camera / detect tool. */
 function isCameraEntryTarget(target) {
   if (!target) return false;
@@ -337,20 +565,53 @@ function pickProductEntry(elements, claimed) {
 async function planPage(args) {
   const apiKey = requireApiKey();
   const model = modelName();
-  const remaining = Math.max(0, MAX_BEATS - args.beatsSoFar);
-  const maxBeatsHere = Math.min(3, remaining);
-  const cameraMode = Boolean(args.cameraMode);
+  const siteType = args.siteType || "product";
+  const hasPlayground = Boolean(args.hasPlayground);
+  const beatCap =
+    siteType === "docs" && !hasPlayground ? DOCS_BRIEF_MAX_BEATS : MAX_BEATS;
+  const remaining = Math.max(0, beatCap - args.beatsSoFar);
+  const maxBeatsHere =
+    siteType === "docs" && !hasPlayground
+      ? Math.min(2, remaining)
+      : Math.min(3, remaining);
+  const cameraMode = siteType === "camera";
+  const docsMode = siteType === "docs";
 
-  const cameraRules = cameraMode
-    ? `
+  let modeRules;
+  let modeLabel;
+  if (cameraMode) {
+    modeLabel = "CAMERA_EXPLAINER";
+    modeRules = `
 CAMERA PRODUCT MODE (required):
 - This product needs a live device camera/webcam. Do NOT open it.
 - NEVER plan beats or nextNavigation into /app, /camera, detect tools, Start Detecting, Open App, Get Started, Upload, flashlight, or sample controls.
 - Stay on the marketing site. Film: (1) one land/hero pause, then (2) How it works / Features / Three steps explainer headings or in-page anchors.
 - Prefer scrolling the explainer over leaving the page. nextNavigation should be null unless it is an in-page #how-it-works style anchor.
 - Set done=true after the explainer arc — never enter the live camera tool.
-`
-    : `
+`;
+  } else if (docsMode && hasPlayground) {
+    modeLabel = "DOCS_PLAYGROUND";
+    modeRules = `
+DOCS / REFERENCE SITE — PLAYGROUND STRATEGY (required):
+- This is documentation/reference, not a product app. Do NOT tour docs sidebars, TOC links, essays, or long prose sections.
+- There IS an interactive surface (Examples / Playground / Try it / Sandbox / Demo). Get there ASAP.
+- On page 0: ONE land/hero pause only, then put the playground/examples link in nextNavigation. No docs TOC beats.
+- On the playground/examples page: film interactive demos (runnable examples, try buttons, live widgets) — not more docs nav.
+- NEVER make nav sidebars, tables of contents, or paragraph text the focal beat.
+- Keep the tour tight. Prefer story over coverage.
+`;
+  } else if (docsMode) {
+    modeLabel = "DOCS_BRIEF";
+    modeRules = `
+DOCS / REFERENCE SITE — BRIEF "WHAT IT IS" STRATEGY (required):
+- This is documentation/reference with NO clear playground. Do NOT scroll docs or click TOC/sidebar.
+- Film a SHORT crisp arc only: (1) land/hero pause with a value caption, (2) at most 1–2 concept highlights that stay on THIS page (feature pills or hero subheads as PAUSE/visit — do not navigate into /docs).
+- nextNavigation MUST be null. Set done=true. Do not pad to fill a longer budget — a clean ~12–15s beats walls of text.
+- NEVER make nav sidebars, tables of contents, essays, or long paragraphs the focal beat.
+`;
+  } else {
+    modeLabel = "PRODUCT_DEMO";
+    modeRules = `
 - This is a PRODUCT DEMO, not a marketing brochure. Show the product working.
 - Prefer interactive controls: buttons, links with action labels (Start / Try / Open / Upload / Generate / Sample / Share), inputs, app chrome.
 - AVOID beats that only click static headings or section titles ("highlight headline", "show three steps"). At most ONE land/hero pause on page 0.
@@ -358,6 +619,7 @@ CAMERA PRODUCT MODE (required):
 - On app/tool pages, film the PRIMARY product loop first (sample / generate / upload / share / result). Do NOT jump to settings/about/account until that loop is shown — prefer done=true after the product loop.
 - Skip low-value chrome (theme toggle) unless nothing else is available.
 `;
+  }
 
   const prompt = `You are DemoBro's tour agent. Plan the NEXT beats for the CURRENT page only.
 
@@ -366,23 +628,23 @@ Description: ${args.description}
 Live origin: ${args.origin}
 Current URL: ${args.currentUrl}
 Page index: ${args.pageIndex} (phase: ${narrativePhase(args.pageIndex)})
-Beats filmed so far: ${args.beatsSoFar}/${MAX_BEATS}
+Beats filmed so far: ${args.beatsSoFar}/${beatCap}
 Pages visited: ${args.visitedPaths.join(" -> ") || "(none yet)"}
 Controls already used (do not reuse): ${args.claimedHints.slice(0, 20).join(", ") || "(none)"}
-Mode: ${cameraMode ? "CAMERA_EXPLAINER" : "PRODUCT_DEMO"}
+Site type: ${siteType.toUpperCase()}
+Mode: ${modeLabel}
 
 GROUND TRUTH — visible controls on THIS page after hydration:
 ${args.elementLines || "(nothing useful)"}
 
 Rules:
-${cameraRules}
+${modeRules}
 - Propose 1-${maxBeatsHere} beats for THIS page only (0 only if the page is empty/useless).
 - Each beat: ONE action (visit/pause/click/type) using a real hint= from the list.
 - description: INTERNAL action note for the robot (e.g. "Pause on hero", "Select rectangle tool") — not shown to viewers.
 - caption: VIEWER-facing benefit line for the on-screen lower-third. 2–6 words, punchy, no trailing punctuation. Describe the VALUE of this screen/feature (why the viewer should care), NEVER the robot action. No "click/visit/scroll/land/select". No selectors or raw element labels. Examples: "Meet DemoBro", "Turn JSON into a map", "Sketch ideas in seconds", "See how it works".
 - On page 0 with an h1, include ONE land/hero pause beat first.
-- Prefer examples / playground / demo / try-it pages over dense docs TOC or sidebar links.
-- CRITICAL: page beats should STAY on this page. Put the SINGLE best same-site deeper link in nextNavigation only (do not also list it as a beat), unless camera mode forbids it.
+- CRITICAL: page beats should STAY on this page. Put the SINGLE best same-site deeper link in nextNavigation only (do not also list it as a beat), unless the mode forbids leaving.
 - nextNavigation.targetHint MUST be a real hint= from the list (prefer a[href^="/"] or a primary CTA button/link). Never use a bare URL path without a matching control.
 - Prefer internal paths (href starting with /) over external for nextNavigation.
 - Set done=true when the tour should end (enough story, no good next page, or remaining budget < 2).
@@ -448,7 +710,8 @@ ${cameraRules}
       return { description, targetHint, caption };
     })
     .filter((b) => b.description && b.targetHint)
-    .filter((b) => !isBrochureBeat(b, { allowExplainer: cameraMode }))
+    .filter((b) => !isBrochureBeat(b, { allowExplainer: cameraMode || docsMode }))
+    .filter((b) => !(docsMode && isDocsSidebarBeat(b)))
     .slice(0, maxBeatsHere);
 
   if (cameraMode) {
@@ -470,11 +733,20 @@ ${cameraRules}
   if (cameraMode && nextNavigation && isCameraEntryTarget(nextNavigation)) {
     nextNavigation = null;
   }
+  if (docsMode && nextNavigation && isDocsSidebarBeat(nextNavigation)) {
+    nextNavigation = null;
+  }
+  if (docsMode && !hasPlayground) {
+    nextNavigation = null;
+  }
 
   return {
     beats,
     nextNavigation,
-    done: Boolean(parsed.done) || beats.length === 0,
+    done:
+      Boolean(parsed.done) ||
+      beats.length === 0 ||
+      (docsMode && !hasPlayground),
     reason: String(parsed.reason || ""),
   };
 }
@@ -646,16 +918,40 @@ export async function recordAgentTour(options) {
       const succeeded = () =>
         reports.filter((r) => r.status === "succeeded").length;
 
-      const cameraMode = isCameraHeavyProduct({
+      const site = classifySiteType({
         title,
         description,
         elements,
         currentUrl,
       });
-      if (cameraMode && pageIndex === 0) {
+      const cameraMode = site.type === "camera";
+      const docsMode = site.type === "docs";
+      const playground =
+        site.playground || pickPlayground(elements, claimed, currentUrl);
+      const beatBudget =
+        docsMode && !playground ? DOCS_BRIEF_MAX_BEATS : MAX_BEATS;
+      if (pageIndex === 0) {
         console.log(
-          `[agent] camera product detected — explainer mode (skip live camera/app)`,
+          `[agent] site type=${site.type} (${site.reason})` +
+            (playground
+              ? ` playground="${playground.targetHint}"`
+              : " playground=none") +
+            ` strategy=${
+              cameraMode
+                ? "camera_explainer"
+                : docsMode && playground
+                  ? "docs_playground"
+                  : docsMode
+                    ? "docs_brief"
+                    : "product_app"
+            }`,
         );
+      }
+
+      if (succeeded() >= beatBudget) {
+        console.log(`[agent] beat budget ${beatBudget} reached — ending`);
+        done = true;
+        break;
       }
 
       const plan = await planPage({
@@ -668,7 +964,8 @@ export async function recordAgentTour(options) {
         visitedPaths,
         claimedHints: [...claimed],
         elementLines: elementsForPrompt(elements),
-        cameraMode,
+        siteType: site.type,
+        hasPlayground: Boolean(playground),
       });
 
       if (cameraMode) {
@@ -703,6 +1000,68 @@ export async function recordAgentTour(options) {
         } else {
           plan.nextNavigation = null;
           plan.done = true;
+        }
+      } else if (docsMode) {
+        plan.beats = (plan.beats || []).filter((b) => !isDocsSidebarBeat(b));
+        if (plan.nextNavigation && isDocsSidebarBeat(plan.nextNavigation)) {
+          plan.nextNavigation = null;
+        }
+        if (pageIndex === 0 && playground) {
+          const land = plan.beats.find((b) =>
+            /\b(land|hero|pause|overview)\b/i.test(b.description),
+          );
+          if (land && !land.caption) {
+            land.caption = productMeetCaption(title);
+          }
+          // Land only, then go to the interactive surface — skip docs prose.
+          plan.beats = land ? [land] : plan.beats.slice(0, 1);
+          plan.nextNavigation = playground;
+          plan.done = false;
+          console.log(
+            `[agent] docs→playground → ${playground.targetHint} ("${playground.caption}")`,
+          );
+        } else if (pageIndex === 0) {
+          // Brief what-it-is: hero + up to 2 on-page concept pauses, then stop.
+          const h1 = elements.find(
+            (el) => el.visible && el.tag === "h1" && el.name,
+          );
+          let land = plan.beats.find((b) =>
+            /\b(land|hero|pause|overview)\b/i.test(b.description),
+          );
+          if (!land && h1) {
+            land = {
+              description: "Land on hero",
+              targetHint: selectorFor(h1),
+              caption: productMeetCaption(title),
+            };
+          }
+          if (land && !land.caption) {
+            land.caption = productMeetCaption(title);
+          }
+          const concepts = plan.beats
+            .filter(
+              (b) =>
+                b !== land &&
+                !isDocsSidebarBeat(b) &&
+                !/href=.*\/(docs?|reference|api|essays)/i.test(
+                  b.targetHint || "",
+                ),
+            )
+            .slice(0, 2);
+          plan.beats = land ? [land, ...concepts] : concepts;
+          plan.nextNavigation = null;
+          plan.done = true;
+          console.log(
+            `[agent] docs brief — ${plan.beats.length} beats, no docs scroll`,
+          );
+        } else {
+          // Accidentally on a docs page — stop rather than scroll prose.
+          plan.beats = plan.beats
+            .filter((b) => !isDocsSidebarBeat(b))
+            .slice(0, 1);
+          plan.nextNavigation = null;
+          plan.done = true;
+          console.log(`[agent] docs page — ending without prose tour`);
         }
       } else if (pageIndex === 0 && !plan.done) {
         // Prefer a strong primary CTA over bare /app nav chrome on landings.
@@ -742,35 +1101,25 @@ export async function recordAgentTour(options) {
           console.log(`[agent] injected land beat → ${land.targetHint}`);
         }
 
-        // Prefer examples/playground over docs when both exist.
-        const demoLink = elements
-          .filter((el) => el.visible && el.href && !claimed.has(selectorFor(el)))
-          .map((el) => {
-            const blob = `${el.name || ""} ${el.href || ""}`.toLowerCase();
-            let score = 0;
-            if (/example|playground|demo|try|sandbox/.test(blob)) score += 6;
-            if (/docs?|reference|api|essays/.test(blob)) score -= 3;
-            return { el, score, hint: selectorFor(el) };
-          })
-          .filter((c) => c.score >= 6)
-          .sort((a, b) => b.score - a.score)[0];
-        const nextBlob = `${plan.nextNavigation?.description || ""} ${plan.nextNavigation?.targetHint || ""}`.toLowerCase();
-        if (
-          demoLink &&
-          (!plan.nextNavigation || /docs?|reference|api/.test(nextBlob))
-        ) {
-          plan.nextNavigation = {
-            description: "See examples",
-            targetHint: demoLink.hint,
-            caption: "Try it live",
-          };
-          plan.done = false;
-          console.log(`[agent] prefer demo/examples → ${demoLink.hint}`);
+        // Product sites: prefer examples/playground over docs when both exist.
+        if (!docsMode) {
+          const demoNav = pickPlayground(elements, claimed);
+          const nextBlob = `${plan.nextNavigation?.description || ""} ${plan.nextNavigation?.targetHint || ""}`.toLowerCase();
+          if (
+            demoNav &&
+            (!plan.nextNavigation || /docs?|reference|api/.test(nextBlob))
+          ) {
+            plan.nextNavigation = demoNav;
+            plan.done = false;
+            console.log(
+              `[agent] prefer demo/examples → ${demoNav.targetHint}`,
+            );
+          }
         }
       }
 
-      // Don't tour settings/about before showing the product loop (non-camera).
-      if (!cameraMode && plan.nextNavigation) {
+      // Don't tour settings/about before showing the product loop (non-camera/docs).
+      if (!cameraMode && !docsMode && plan.nextNavigation) {
         const navBlob = `${plan.nextNavigation.description} ${plan.nextNavigation.targetHint}`.toLowerCase();
         const goesMeta = /\b(settings|about|account|pricing|blog|docs)\b/.test(
           navBlob,
@@ -787,6 +1136,57 @@ export async function recordAgentTour(options) {
           plan.nextNavigation = null;
           plan.done = true;
         }
+      }
+
+      // On examples/playground surfaces, stay on the interactive story —
+      // never click into docs TOC / attribute reference pages.
+      if (
+        !docsMode &&
+        /\/(examples?|playground|sandbox|tutorial|repl)\b/i.test(currentUrl)
+      ) {
+        const docsPathRe =
+          /\/(docs?|reference|api|essays|attributes?)(\/|$)/i;
+        const leavesInteractive = (b) => {
+          if (!b) return false;
+          const hint = String(b.targetHint || "");
+          if (docsPathRe.test(hint) || isDocsSidebarBeat(b)) return true;
+          // Resolve hint → live href (selectors often omit the path).
+          const textM = hint.match(/has-text\("([^"]+)"\)/i);
+          const label = textM ? textM[1].toLowerCase() : "";
+          const match = elements.find((el) => {
+            if (!el.visible || !el.href) return false;
+            if (selectorFor(el) === hint) return true;
+            if (
+              label &&
+              String(el.name || "")
+                .toLowerCase()
+                .trim() === label
+            ) {
+              return true;
+            }
+            return false;
+          });
+          return Boolean(
+            match?.href &&
+              docsPathRe.test(hrefPath(match.href, currentUrl)),
+          );
+        };
+        const before = plan.beats.length;
+        plan.beats = (plan.beats || []).filter((b) => !leavesInteractive(b));
+        if (plan.beats.length < before) {
+          console.log(
+            `[agent] dropped ${before - plan.beats.length} docs-bound beat(s) on interactive surface`,
+          );
+        }
+        if (plan.nextNavigation && leavesInteractive(plan.nextNavigation)) {
+          console.log(
+            `[agent] dropping docs nextNavigation from interactive surface`,
+          );
+          plan.nextNavigation = null;
+          plan.done = true;
+        }
+        // Prefer ending on the interactive surface rather than padding.
+        if (!plan.nextNavigation) plan.done = true;
       }
 
       console.log(
@@ -806,6 +1206,16 @@ export async function recordAgentTour(options) {
       pagePlans.push({
         page: pageIndex,
         url: currentUrl,
+        siteType: site.type,
+        strategy:
+          cameraMode
+            ? "camera_explainer"
+            : docsMode && playground
+              ? "docs_playground"
+              : docsMode
+                ? "docs_brief"
+                : "product_app",
+        playground: playground?.targetHint || null,
         beats: plan.beats,
         next: plan.nextNavigation,
         done: plan.done,
@@ -813,7 +1223,7 @@ export async function recordAgentTour(options) {
 
       let leftPageEarly = false;
       for (const beat of plan.beats) {
-        if (succeeded() >= MAX_BEATS || timedOut) break;
+        if (succeeded() >= beatBudget || timedOut) break;
         const beforeUrl = pathKey(page.url());
         await filmOne({
           id: `p${pageIndex}-b${reports.length}`,
@@ -842,7 +1252,7 @@ export async function recordAgentTour(options) {
         continue;
       }
 
-      if (plan.done || !plan.nextNavigation || succeeded() >= MAX_BEATS) {
+      if (plan.done || !plan.nextNavigation || succeeded() >= beatBudget) {
         done = true;
         break;
       }
@@ -856,7 +1266,7 @@ export async function recordAgentTour(options) {
       }
       navEdges.add(edge);
 
-      if (succeeded() < MAX_BEATS) {
+      if (succeeded() < beatBudget) {
         const navHint = String(nav.targetHint || "");
         // Must be a real navigation target — not a toolbar button with :has-text.
         const looksLikeLink =
