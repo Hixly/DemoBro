@@ -52,11 +52,35 @@ function isNativePermissionStep(step) {
   );
 }
 
+/**
+ * Normalize visible labels for selectors + captions.
+ * Collapses whitespace, strips arrows, unglues camelCase / "Currently infoo".
+ */
+export function normalizeLabel(raw) {
+  let s = String(raw ?? "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  s = s.replace(/([a-z])([A-Z])/g, "$1 $2");
+  s = s.replace(/\s*[→⟶»›]+\s*/g, " ");
+  s = s.replace(/[●•·▪▸]+/g, " ");
+  s = s.replace(/^(Currently\s+in)([a-z])/i, "$1 $2");
+  s = s.replace(/\s+/g, " ").trim();
+  // Card dumps ("Hackyard Live A hackathon platform…") → short name.
+  if (s.length > 36) {
+    const words = s.split(/\s+/).slice(0, 4).join(" ");
+    s = words.length >= 2 ? words : s.slice(0, 33).trim();
+  }
+  if (s.length > 48) s = `${s.slice(0, 45).trim()}…`;
+  return s;
+}
+
 /** Pull real interactive/heading elements from the hydrated page. */
-async function enumerateElements(page) {
-  return page.evaluate(() => {
+export async function enumerateElements(page) {
+  const raw = await page.evaluate(() => {
     const clean = (v) =>
-      v ? String(v).replace(/\s+/g, " ").trim().slice(0, 120) : "";
+      v ? String(v).replace(/\s+/g, " ").trim().slice(0, 160) : "";
     const accessibleName = (el) =>
       clean(
         el.getAttribute("aria-label") ||
@@ -115,17 +139,25 @@ async function enumerateElements(page) {
 
     return out;
   });
+
+  return raw.map((el) => ({
+    ...el,
+    name: normalizeLabel(el.name),
+  }));
 }
 
 /** Build a Playwright-usable selector string for a real element. */
-function selectorFor(el) {
+export function selectorFor(el) {
   if (el.testId) return `[data-testid="${el.testId}"]`;
   if (el.id && /^[A-Za-z][\w:-]*$/.test(el.id)) return `#${el.id}`;
-  if (el.name) {
-    return `${el.tag}:has-text("${el.name.slice(0, 60).replace(/"/g, '\\"')}")`;
-  }
+  // Prefer stable href over long / garbled visible text.
   if (el.href && el.href.startsWith("/") && el.href.length < 80) {
     return `a[href="${el.href}"]`;
+  }
+  const name = normalizeLabel(el.name);
+  if (name) {
+    const short = name.slice(0, 40).replace(/"/g, '\\"');
+    return `${el.tag}:has-text("${short}")`;
   }
   return el.tag;
 }
@@ -147,17 +179,27 @@ function tokens(str) {
 
 /** Token overlap between a step and a real element's name/text. */
 function scoreMatch(step, el) {
+  const desc = `${step.description} ${step.targetHint}`.toLowerCase();
   const stepTokens = new Set([
     ...tokens(step.description),
     ...tokens(step.targetHint),
   ]);
   if (stepTokens.size === 0) return 0;
+  const elName = String(el.name || "").toLowerCase();
   const elTokens = tokens(el.name);
   if (elTokens.length === 0) return 0;
+
+  // Hard preference: Copy steps must match Copy*; don't steal Generate Email.
+  if (/\bcopy\b/.test(desc) && !/\bcopy\b/.test(elName)) return 0;
+  if (/\bgenerat/.test(desc) && !/\bgenerat/.test(elName)) return 0;
+
   let hits = 0;
   for (const t of elTokens) if (stepTokens.has(t)) hits += 1;
   // Normalize by the element's token count so short exact labels win.
-  return hits / Math.max(elTokens.length, 1);
+  let score = hits / Math.max(elTokens.length, 1);
+  if (/\bcopy\b/.test(desc) && /\bcopy\b/.test(elName)) score += 0.35;
+  if (/\bgenerat/.test(desc) && /\bgenerat/.test(elName)) score += 0.25;
+  return Math.min(1, score);
 }
 
 async function probe(page, selector) {

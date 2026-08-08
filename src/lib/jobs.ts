@@ -20,7 +20,7 @@ export type JobRow = {
   title: string;
   description: string;
   stack_badges: string[];
-  storyboard: { steps: StoryboardStep[] };
+  storyboard: { steps: StoryboardStep[]; mode?: "agent" | "steps" };
   status: JobStatus;
   stage: string | null;
   output_path: string | null;
@@ -44,7 +44,8 @@ export async function createJob(input: {
   title: string;
   description: string;
   badges: string[];
-  steps: StoryboardStep[];
+  steps?: StoryboardStep[];
+  mode?: "agent" | "steps";
   ip: string;
 }): Promise<JobRow> {
   const supabase = getSupabaseAdmin();
@@ -59,7 +60,10 @@ export async function createJob(input: {
     title: input.title,
     description: input.description,
     stack_badges: input.badges,
-    storyboard: { steps: input.steps },
+    storyboard: {
+      mode: input.mode === "agent" ? "agent" : "steps",
+      steps: Array.isArray(input.steps) ? input.steps : [],
+    },
     status: "queued" as const,
     stage: "queued",
     output_path: null,

@@ -37,7 +37,7 @@ const STORYBOARD_SCHEMA = {
           description: {
             type: "string",
             description:
-              "One concrete user action in plain English, e.g. Click Get Started",
+              "Caption-ready beat, max ~6 words, e.g. Try for free / Type your goal",
           },
           targetHint: {
             type: "string",
@@ -104,18 +104,25 @@ README excerpt:
 ${args.readmeExcerpt.slice(0, 1500)}
 """
 
-Interactive / structural elements found on the rendered page:
-${elementLines || "(no elements extracted — infer carefully from README and URL)"}
+GROUND TRUTH — interactive elements visible on the LANDING page after JS hydration
+(captured by a real headless browser, not static HTML). ONLY plan steps around
+these controls. Do NOT invent buttons, tabs, forms, or screens that are not listed.
+UI that appears only after deep flows (post-login, post-submit results) is unknown
+— do not fabricate steps for it.
 
-Propose 5-6 demo steps that actually exercise the app's core features. Rules:
+${elementLines || "(no visible interactive elements — plan a gentle visit/scroll overview using body)"}
+
+Propose 5-6 demo steps a first-time visitor can perform from this landing state. Rules:
 - Each step is ONE concrete user action a browser can perform.
 - Prefer 5 or 6 steps — enough to fill a ~20–25s tour, not a thin 3-click skim.
 - Step 1 should land on / pause on the hero or primary landing view.
-- Prefer real controls from the element list above.
-- ALWAYS put a "type into the input/textarea" step immediately BEFORE any "click Generate / Submit / Send / Analyze" step so the button is enabled and the interactive flow films (never click a disabled submit).
-- description: short plain English, imperative ("Click Try it free").
-- targetHint: a real selector or accessible-name hint suitable for Playwright (prefer the hint= values above, or role+name, or :has-text("...")).
-- Do not invent payment/auth flows unless clearly present.
+- Prefer real controls from the element list above (use their hint= values).
+- Order steps sensibly for a first-time visitor (scan hero → primary CTA → secondary).
+- If an input exists, a type step may precede clicking a related submit — only if BOTH are listed.
+- NEVER invent post-flow result screens (drafts, dashboards, modals) that aren't in the list.
+- description: caption-ready — max ~6 words, imperative, no filler.
+- targetHint: a real selector or accessible-name hint suitable for Playwright (prefer hint= values).
+- Do not invent payment/auth flows unless clearly present as a visible control.
 - Do not include voiceover, captions, or music notes.
 - Return JSON only matching the schema.`;
 }
@@ -191,7 +198,7 @@ export async function generateStoryboard(args: {
         {
           role: "system",
           content:
-            "You write concrete browser-demo storyboards. Prefer real selectors from the provided page structure. Respond with structured JSON only.",
+            "You write concrete browser-demo storyboards from a hydrated landing-page element list. Never invent controls that are not listed. Respond with structured JSON only.",
         },
         { role: "user", content: prompt },
       ],

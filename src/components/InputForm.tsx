@@ -9,9 +9,7 @@ import {
 } from "react";
 import { DownloadScreen } from "@/components/DownloadScreen";
 import { RenderWait } from "@/components/RenderWait";
-import { StoryboardEditor } from "@/components/StoryboardEditor";
 import { resolvePipelineStage } from "@/lib/pipeline-stages";
-import type { StoryboardStep } from "@/lib/storyboard";
 import {
   isFormValid,
   validateGithubUrl,
@@ -19,21 +17,12 @@ import {
   type FieldError,
 } from "@/lib/validate";
 
-type Stage =
-  | "input"
-  | "reading"
-  | "fallback"
-  | "planning"
-  | "storyboard"
-  | "working"
-  | "ready";
+type Stage = "input" | "reading" | "fallback" | "working" | "ready";
 
-type StoryboardPayload = {
+type ProjectMeta = {
   title: string;
   description: string;
   badges: string[];
-  steps: StoryboardStep[];
-  model?: string;
 };
 
 type JobPoll = {
@@ -54,21 +43,21 @@ export function InputForm() {
   const [manualTitle, setManualTitle] = useState("");
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [storyboard, setStoryboard] = useState<StoryboardPayload | null>(null);
+  const [projectMeta, setProjectMeta] = useState<ProjectMeta | null>(null);
   const [job, setJob] = useState<JobPoll | null>(null);
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const notifiedRef = useRef(false);
   const notifyEnabledRef = useRef(false);
-  const storyboardTitleRef = useRef<string | undefined>(undefined);
+  const projectTitleRef = useRef<string | undefined>(undefined);
   notifyEnabledRef.current = notifyEnabled;
-  storyboardTitleRef.current = storyboard?.title;
+  projectTitleRef.current = projectMeta?.title;
 
   const liveError: FieldError = liveTouched ? validateLiveUrl(liveUrl) : null;
   const githubError: FieldError = githubTouched
     ? validateGithubUrl(githubUrl)
     : null;
-  const busy = stage === "reading" || stage === "planning" || stage === "working";
+  const busy = stage === "reading" || stage === "working";
   const canSubmit = isFormValid(liveUrl, githubUrl) && !busy;
 
   useEffect(() => {
@@ -109,7 +98,7 @@ export function InputForm() {
             notifiedRef.current = true;
             try {
               new Notification("DemoBro — video ready", {
-                body: `${payload.title || storyboardTitleRef.current || "Your demo"} is ready to watch.`,
+                body: `${payload.title || projectTitleRef.current || "Your demo"} is ready to watch.`,
                 tag: "demobro-ready",
               });
             } catch {
@@ -120,7 +109,7 @@ export function InputForm() {
           setError(null);
         } else if (payload.status === "failed" || payload.status === "expired") {
           stopPolling();
-          setStage("storyboard");
+          setStage("input");
           setError(payload.error ?? "Recording failed.");
         }
       } catch (err) {
@@ -132,43 +121,41 @@ export function InputForm() {
     pollRef.current = setInterval(() => void tick(), 2500);
   }
 
-  async function requestStoryboard(manualTitleOverride?: string) {
-    setStage("planning");
+  /**
+   * Enqueue an agent job — the worker discovers the tour while filming.
+   * No pre-baked storyboard editor (that would fake a complete plan).
+   */
+  async function startAgentJob(meta: {
+    title: string;
+    description: string;
+    badges: string[];
+  }) {
     setError(null);
+    setStage("working");
+    setProjectMeta(meta);
 
-    const res = await fetch("/api/storyboard", {
+    const res = await fetch("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         liveUrl: liveUrl.trim(),
         githubUrl: githubUrl.trim(),
-        manualTitle: manualTitleOverride?.trim() || undefined,
+        title: meta.title,
+        description: meta.description,
+        badges: meta.badges,
+        mode: "agent",
+        steps: [],
       }),
     });
-
     const payload = (await res.json().catch(() => null)) as {
+      id?: string;
       error?: string;
-      title?: string;
-      description?: string;
-      badges?: string[];
-      storyboard?: {
-        steps: StoryboardStep[];
-        model?: string;
-      };
     } | null;
-
-    if (!res.ok || !payload?.storyboard?.steps) {
-      throw new Error(payload?.error ?? `Storyboard failed (${res.status})`);
+    if (!res.ok || !payload?.id) {
+      throw new Error(payload?.error ?? `Could not start job (${res.status})`);
     }
-
-    setStoryboard({
-      title: payload.title ?? "Untitled project",
-      description: payload.description ?? "",
-      badges: payload.badges ?? [],
-      steps: payload.storyboard.steps,
-      model: payload.storyboard.model,
-    });
-    setStage("storyboard");
+    setJob({ id: payload.id, status: "queued", stage: "queued" });
+    startPolling(payload.id);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -200,6 +187,9 @@ export function InputForm() {
         status: "ok" | "fallback";
         message?: string;
         suggestedTitle?: string;
+        title?: string;
+        description?: string;
+        badges?: string[];
       };
 
       if (ingest.status === "fallback") {
@@ -211,7 +201,11 @@ export function InputForm() {
         return;
       }
 
-      await requestStoryboard();
+      await startAgentJob({
+        title: ingest.title ?? "Untitled project",
+        description: ingest.description ?? "",
+        badges: ingest.badges ?? [],
+      });
     } catch (err) {
       setStage("input");
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -225,50 +219,21 @@ export function InputForm() {
       return;
     }
     try {
-      await requestStoryboard(manualTitle);
+      await startAgentJob({
+        title: manualTitle.trim(),
+        description: "",
+        badges: [],
+      });
     } catch (err) {
       setStage("fallback");
-      setError(err instanceof Error ? err.message : "Storyboard failed.");
-    }
-  }
-
-  async function handleRecord() {
-    if (!storyboard) return;
-    setError(null);
-    setStage("working");
-
-    try {
-      const res = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          liveUrl: liveUrl.trim(),
-          githubUrl: githubUrl.trim(),
-          title: storyboard.title,
-          description: storyboard.description,
-          badges: storyboard.badges,
-          steps: storyboard.steps,
-        }),
-      });
-      const payload = (await res.json().catch(() => null)) as {
-        id?: string;
-        error?: string;
-      } | null;
-      if (!res.ok || !payload?.id) {
-        throw new Error(payload?.error ?? `Could not start job (${res.status})`);
-      }
-      setJob({ id: payload.id, status: "queued", stage: "queued" });
-      startPolling(payload.id);
-    } catch (err) {
-      setStage("storyboard");
-      setError(err instanceof Error ? err.message : "Could not start recording.");
+      setError(err instanceof Error ? err.message : "Could not start demo.");
     }
   }
 
   function resetAll() {
     stopPolling();
     setStage("input");
-    setStoryboard(null);
+    setProjectMeta(null);
     setJob(null);
     setError(null);
     setFallbackMessage(null);
@@ -293,14 +258,14 @@ export function InputForm() {
   if (stage === "ready" && job?.videoUrl) {
     return shell(
       <DownloadScreen
-        title={job.title || storyboard?.title || "Your demo"}
+        title={job.title || projectMeta?.title || "Your demo"}
         videoUrl={job.videoUrl}
         onAnother={resetAll}
       />,
     );
   }
 
-  if (stage === "reading" || stage === "planning" || stage === "working") {
+  if (stage === "reading" || stage === "working") {
     return shell(
       <RenderWait
         currentStage={resolvePipelineStage(stage, job?.stage)}
@@ -308,32 +273,6 @@ export function InputForm() {
         onNotifyChange={setNotifyEnabled}
         error={error}
       />,
-    );
-  }
-
-  if (stage === "storyboard" && storyboard) {
-    return shell(
-      <div className="flex flex-col gap-3">
-        <StoryboardEditor
-          title={storyboard.title}
-          description={storyboard.description}
-          badges={storyboard.badges}
-          steps={storyboard.steps}
-          model={storyboard.model}
-          onChange={(steps) => setStoryboard({ ...storyboard, steps })}
-          onRecord={() => void handleRecord()}
-          onBack={resetAll}
-        />
-        {error ? (
-          <p
-            role="alert"
-            className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-center font-heading text-sm font-semibold text-danger rotate-1"
-          >
-            {error}
-          </p>
-        ) : null}
-      </div>,
-      { wide: true },
     );
   }
 
@@ -369,7 +308,7 @@ export function InputForm() {
           />
         </label>
         <button type="submit" className="stamp-button font-heading -rotate-1">
-          Continue to storyboard
+          Discover & film tour
         </button>
         <button
           type="button"

@@ -12,6 +12,8 @@ type Body = {
   description?: string;
   badges?: string[];
   steps?: StoryboardStep[];
+  /** Agent discovers the tour while filming — no pre-baked steps required. */
+  mode?: "agent" | "steps";
 };
 
 function clientIp(request: Request): string {
@@ -39,8 +41,9 @@ export async function POST(request: Request) {
     );
   }
 
+  const mode = body.mode === "agent" ? "agent" : "steps";
   const steps = Array.isArray(body.steps) ? body.steps : [];
-  if (steps.length < 1) {
+  if (mode !== "agent" && steps.length < 1) {
     return NextResponse.json(
       { error: "Storyboard needs at least one step." },
       { status: 400 },
@@ -55,6 +58,7 @@ export async function POST(request: Request) {
       description: body.description?.trim() || "",
       badges: Array.isArray(body.badges) ? body.badges : [],
       steps,
+      mode,
       ip: clientIp(request),
     });
 

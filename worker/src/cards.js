@@ -47,8 +47,10 @@ function titleCardHtml({ title, description, liveUrl, badges }) {
     }
     .desc {
       margin: 0;
-      font-size: 34px; font-weight: 500; line-height: 1.35;
-      color: #3A3A3A; text-align: center; max-width: 1100px;
+      font-size: 32px; font-weight: 500; line-height: 1.35;
+      color: #3A3A3A; text-align: center; max-width: 1180px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
     }
     .url {
       margin: 4px 0 0;

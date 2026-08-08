@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 import { recordStoryboard } from "./record.js";
+import { recordAgentTour } from "./agent-tour.js";
 import { renderDemo } from "./render.js";
 import { claimNextJob, markJobReady, markJobStatus, uploadFinishedMp4 } from "./upload.js";
 
@@ -13,8 +14,9 @@ const WORKER_ID = process.env.RAILWAY_REPLICA_ID || hostname() || "worker";
 const POLL_MS = Number(process.env.DEMOBRO_POLL_MS || 5000);
 
 async function processJob(job) {
+  const mode = job.storyboard?.mode === "agent" ? "agent" : "steps";
   const steps = job.storyboard?.steps ?? [];
-  if (!steps.length) {
+  if (mode !== "agent" && !steps.length) {
     await markJobStatus(job.id, "failed", "failed", {
       error_message: "Job has an empty storyboard.",
     });
@@ -25,12 +27,24 @@ async function processJob(job) {
   let videoDir = null;
 
   try {
-    const recordResult = await recordStoryboard({
-      liveUrl: job.live_url,
-      steps,
-      outputDir: OUTPUT,
-      jobId: job.id,
-    });
+    await markJobStatus(job.id, "recording", "discovering_tour");
+
+    const recordResult =
+      mode === "agent"
+        ? await recordAgentTour({
+            liveUrl: job.live_url,
+            repoUrl: job.repo_url,
+            title: job.title,
+            description: job.description,
+            outputDir: OUTPUT,
+            jobId: job.id,
+          })
+        : await recordStoryboard({
+            liveUrl: job.live_url,
+            steps,
+            outputDir: OUTPUT,
+            jobId: job.id,
+          });
     videoDir = recordResult.videoDir;
 
     await markJobStatus(job.id, "rendering", "cutting_video");
@@ -39,8 +53,8 @@ async function processJob(job) {
     await renderDemo({
       rawVideoPath: recordResult.videoPath,
       timeline: recordResult.timeline,
-      title: job.title || "Untitled project",
-      description: job.description || "",
+      title: recordResult.title || job.title || "Untitled project",
+      description: recordResult.description || job.description || "",
       badges: job.stack_badges || [],
       liveUrl: job.live_url,
       repoUrl: job.repo_url,
