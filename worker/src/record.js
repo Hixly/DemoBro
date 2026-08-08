@@ -51,6 +51,7 @@ function extractTypedValue(description) {
  *   endMs?: number,
  *   box?: TargetBox | null,
  *   actionPoint?: ActionPoint | null,
+ *   contentBounds?: TargetBox | null,
  *   stepKind?: StepKind,
  * }} StepReport
  */
@@ -88,6 +89,135 @@ function classifyStepKind(step, tag, desc) {
     return "pause";
   }
   return "click";
+}
+
+/**
+ * Visible content bounding box — the meaningful rendered column/cluster,
+ * ignoring empty viewport margins. Used by render to keep framing balanced.
+ * @param {import('playwright').Page} page
+ * @returns {Promise<TargetBox | null>}
+ */
+export async function measureContentBounds(page) {
+  try {
+    const bounds = await page.evaluate(({ vw, vh }) => {
+      const skipTag = new Set([
+        "SCRIPT",
+        "STYLE",
+        "NOSCRIPT",
+        "META",
+        "LINK",
+        "HEAD",
+        "BR",
+        "SVG",
+        "PATH",
+      ]);
+
+      /** @type {{ x: number, y: number, w: number, h: number, area: number }[]} */
+      const boxes = [];
+
+      const consider = (el) => {
+        if (!el || skipTag.has(el.tagName)) return;
+        const style = window.getComputedStyle(el);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          Number(style.opacity) === 0
+        ) {
+          return;
+        }
+        const r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) return;
+        if (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw) return;
+        // Full-viewport / near-full shells don't define the content column.
+        if (r.width >= vw * 0.88 && r.height >= vh * 0.55) return;
+        if (r.width >= vw * 0.9 && r.height < 10) return;
+        if (r.height >= vh * 0.9 && r.width < 10) return;
+        // Wide empty wrappers inflate bounds on left-aligned terminal pages.
+        if (r.width >= vw * 0.82 && r.height >= vh * 0.35) return;
+
+        const left = Math.max(0, r.left);
+        const top = Math.max(0, r.top);
+        const right = Math.min(vw, r.right);
+        const bottom = Math.min(vh, r.bottom);
+        const w = right - left;
+        const h = bottom - top;
+        if (w < 4 || h < 4) return;
+        boxes.push({ x: left, y: top, w, h, area: w * h });
+      };
+
+      const roots = document.querySelectorAll(
+        'main, article, [role="main"], form, section, header, h1, h2, h3, h4, p, li, pre, code, input, textarea, button, a, img, video, canvas, label, [class*="terminal"], [class*="hero"], [class*="content"]',
+      );
+      for (const el of roots) consider(el);
+
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+      );
+      let node = walker.nextNode();
+      let textSamples = 0;
+      while (node && textSamples < 120) {
+        const t = (node.textContent || "").trim();
+        if (t.length >= 2) {
+          consider(node.parentElement);
+          textSamples += 1;
+        }
+        node = walker.nextNode();
+      }
+
+      if (boxes.length < 2) return null;
+
+      // Prefer the dense content column: drop the widest outliers, then union.
+      boxes.sort((a, b) => a.area - b.area);
+      const keep = boxes.slice(0, Math.max(2, Math.ceil(boxes.length * 0.85)));
+      // Further prefer boxes whose centers cluster (mode column).
+      const centers = keep.map((b) => b.x + b.w / 2).sort((a, b) => a - b);
+      const mid = centers[Math.floor(centers.length / 2)];
+      const clustered = keep.filter((b) => {
+        const cx = b.x + b.w / 2;
+        return Math.abs(cx - mid) < vw * 0.28;
+      });
+      const use = clustered.length >= 2 ? clustered : keep;
+
+      let minX = vw;
+      let minY = vh;
+      let maxX = 0;
+      let maxY = 0;
+      for (const b of use) {
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.w);
+        maxY = Math.max(maxY, b.y + b.h);
+      }
+      const w = maxX - minX;
+      const h = maxY - minY;
+      if (w < vw * 0.1 || h < vh * 0.08) return null;
+
+      const padX = Math.min(56, Math.max(24, w * 0.05));
+      const padY = Math.min(40, Math.max(16, h * 0.04));
+      const x = Math.max(0, minX - padX);
+      const y = Math.max(0, minY - padY);
+      return {
+        x,
+        y,
+        w: Math.min(vw - x, w + padX * 2),
+        h: Math.min(vh - y, h + padY * 2),
+      };
+    }, { vw: VIEWPORT.width, vh: VIEWPORT.height });
+
+    if (
+      !bounds ||
+      !Number.isFinite(bounds.w) ||
+      !Number.isFinite(bounds.h) ||
+      bounds.w < 8 ||
+      bounds.h < 8
+    ) {
+      return null;
+    }
+    return bounds;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -286,6 +416,7 @@ export async function executeStep(page, step, index) {
     targetHint: step.targetHint,
     box: null,
     actionPoint: null,
+    contentBounds: null,
     stepKind: /** @type {StepKind} */ ("pause"),
   };
 
@@ -299,6 +430,11 @@ export async function executeStep(page, step, index) {
     };
   }
 
+  const finishOk = async (report) => {
+    const contentBounds = await measureContentBounds(page);
+    return { ...report, contentBounds };
+  };
+
   try {
     // Only goto when the hint itself is a URL. Descriptions like "Open the app"
     // with a[href="/app"] must fall through to click — otherwise we no-op on
@@ -306,7 +442,7 @@ export async function executeStep(page, step, index) {
     if (looksLikeUrl(step.targetHint)) {
       await safeGoto(page, step.targetHint);
       await sleep(SETTLE_MS + 1_000);
-      return { ...base, stepKind: "nav", status: "succeeded" };
+      return finishOk({ ...base, stepKind: "nav", status: "succeeded" });
     }
 
     const locator = await locatorForHint(page, step.targetHint);
@@ -322,12 +458,12 @@ export async function executeStep(page, step, index) {
     if (stepKind === "pause") {
       await locator.hover({ timeout: STEP_TIMEOUT_MS }).catch(() => {});
       await sleep(SETTLE_MS + 1_200);
-      return {
+      return finishOk({
         ...base,
         ...meta,
         stepKind,
         status: "succeeded",
-      };
+      });
     }
 
     // Fill text fields so interactive flows unlock (e.g. typing a prompt
@@ -341,12 +477,12 @@ export async function executeStep(page, step, index) {
         await locator.pressSequentially(value, { delay: 25 }).catch(() => {});
       }
       await sleep(SETTLE_MS + 1_000);
-      return {
+      return finishOk({
         ...base,
         ...meta,
         stepKind,
         status: "succeeded",
-      };
+      });
     }
 
     // Prefer force when a sheet/modal may intercept (common after "view details").
@@ -385,12 +521,12 @@ export async function executeStep(page, step, index) {
     } else {
       await sleep(SETTLE_MS + 900);
     }
-    return {
+    return finishOk({
       ...base,
       ...meta,
       stepKind,
       status: "succeeded",
-    };
+    });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.warn(`[record] step ${index + 1} skipped: ${reason}`);
