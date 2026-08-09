@@ -15,6 +15,13 @@ import {
 import { executeStep } from "./record.js";
 import { ingestRepoLight } from "./generate-storyboard.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
+import {
+  GROK_MAX_ATTEMPTS,
+  GROK_TIMEOUT_MS,
+  probeLiveUrl,
+  toUserFacingError,
+  withRetry,
+} from "./job-utils.js";
 
 const VIEWPORT = { width: 1920, height: 1080 };
 const SETTLE_MS = 1800;
@@ -439,9 +446,17 @@ function classifySiteType({ title, description, elements, currentUrl }) {
   }
 
   const playground = pickPlayground(els, new Set(), currentUrl);
-  // Already on an examples/playground URL → treat as product surface.
+  // Already on an examples/playground PATH → treat as product surface.
+  // Use pathname only so hosts like example.com don't false-match.
+  const pathOnly = (() => {
+    try {
+      return new URL(currentUrl || "https://example.com").pathname;
+    } catch {
+      return "";
+    }
+  })();
   if (
-    /\/(examples?|playground|sandbox|tutorial|play)\b/i.test(currentUrl || "")
+    /\/(examples?|playground|sandbox|tutorial|repl)(\/|$)/i.test(pathOnly)
   ) {
     return {
       type: "product",
@@ -652,51 +667,71 @@ ${modeRules}
 - Never invent controls not in the list.
 - Return JSON only.`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 40_000);
-  let res;
-  try {
-    res = await fetch("https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.25,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You plan short product-demo beats from a live hydrated element list. Each beat needs an internal description, a real targetHint, and a viewer-facing caption about product value (not robot actions). Never invent controls. Respond with structured JSON only.",
+  const data = await withRetry(
+    async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        GROK_TIMEOUT_MS,
+      );
+      let res;
+      try {
+        res = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
           },
-          { role: "user", content: prompt },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "page_tour_plan",
-            schema: PAGE_PLAN_SCHEMA,
-            strict: true,
-          },
-        },
-      }),
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+          body: JSON.stringify({
+            model,
+            temperature: 0.25,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You plan short product-demo beats from a live hydrated element list. Each beat needs an internal description, a real targetHint, and a viewer-facing caption about product value (not robot actions). Never invent controls. Respond with structured JSON only.",
+              },
+              { role: "user", content: prompt },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "page_tour_plan",
+                schema: PAGE_PLAN_SCHEMA,
+                strict: true,
+              },
+            },
+          }),
+        });
+      } catch (err) {
+        const name = err && typeof err === "object" ? err.name : "";
+        if (name === "AbortError") {
+          throw new Error("Planning timed out");
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeout);
+      }
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(
-      `Grok page-plan error ${res.status}: ${detail.slice(0, 200)}`,
-    );
-  }
-  const data = await res.json();
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(
+          `Grok page-plan error ${res.status}: ${detail.slice(0, 200)}`,
+        );
+      }
+      const json = await res.json();
+      const content = json.choices?.[0]?.message?.content;
+      if (!content) throw new Error("Empty page-plan response");
+      return json;
+    },
+    {
+      attempts: GROK_MAX_ATTEMPTS,
+      delayMs: 900,
+      label: "planPage",
+    },
+  );
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("Empty page-plan response");
   const parsed = JSON.parse(content);
   let beats = (Array.isArray(parsed.beats) ? parsed.beats : [])
     .map((b) => {
@@ -753,13 +788,19 @@ ${modeRules}
 
 async function safeGoto(page, url) {
   const before = await assertSafePublicUrl(url);
-  if (!before.ok) throw new Error(before.error);
-  await page.goto(before.url.toString(), {
-    waitUntil: "domcontentloaded",
-    timeout: 30_000,
-  });
+  if (!before.ok) throw new Error(toUserFacingError(new Error(before.error)));
+  try {
+    await page.goto(before.url.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+  } catch (err) {
+    throw new Error(toUserFacingError(err));
+  }
   const after = await assertSafePublicUrl(page.url());
-  if (!after.ok) throw new Error(`Blocked after redirect: ${after.error}`);
+  if (!after.ok) {
+    throw new Error(toUserFacingError(new Error(after.error)));
+  }
 }
 
 async function hydrateSettle(page) {
@@ -778,16 +819,25 @@ export async function recordAgentTour(options) {
   const videoDir = path.join(options.outputDir, "raw", jobId);
   await mkdir(videoDir, { recursive: true });
 
+  const probed = await probeLiveUrl(liveUrl);
+  if (!probed.ok) throw new Error(probed.error);
   const safe = await assertSafePublicUrl(liveUrl);
-  if (!safe.ok) throw new Error(safe.error);
+  if (!safe.ok) throw new Error(toUserFacingError(new Error(safe.error)));
   const origin = safe.url.origin;
 
   let title = options.title || "Demo";
   let description = options.description || "";
   if (options.repoUrl) {
-    const repo = await ingestRepoLight(options.repoUrl);
-    title = options.title || repo.title;
-    description = options.description || repo.description;
+    try {
+      const repo = await ingestRepoLight(options.repoUrl);
+      title = options.title || repo.title;
+      description = options.description || repo.description;
+    } catch (err) {
+      // Never fail the job on GitHub — title/description from the form are enough.
+      console.warn(
+        `[agent] repo ingest soft-fail: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   const reports = [];
@@ -878,6 +928,27 @@ export async function recordAgentTour(options) {
     return report.status === "succeeded";
   };
 
+  /** Minimal safe cut when the page has nothing to tour — still produce a video. */
+  const filmMinimalLanding = async (elements) => {
+    const h1 = (elements || []).find(
+      (el) => el.visible && el.tag === "h1" && el.name,
+    );
+    const target = h1
+      ? {
+          description: "Land on hero",
+          targetHint: selectorFor(h1),
+          caption: productMeetCaption(title),
+        }
+      : {
+          description: "Land on page",
+          targetHint: "body",
+          caption: productMeetCaption(title),
+        };
+    console.log(`[agent] minimal safe cut → ${target.targetHint}`);
+    await filmOne(target);
+    await sleep(1200);
+  };
+
   const session = (async () => {
     await safeGoto(page, safe.url.toString());
     await hydrateSettle(page);
@@ -918,6 +989,16 @@ export async function recordAgentTour(options) {
       const succeeded = () =>
         reports.filter((r) => r.status === "succeeded").length;
 
+      // Empty / uncooperative page → film a short land beat and finish.
+      if (pageIndex === 0 && useful.length === 0) {
+        console.warn(
+          `[agent] no usable controls — filming minimal landing cut`,
+        );
+        await filmMinimalLanding(elements);
+        done = true;
+        break;
+      }
+
       const site = classifySiteType({
         title,
         description,
@@ -954,19 +1035,34 @@ export async function recordAgentTour(options) {
         break;
       }
 
-      const plan = await planPage({
-        title,
-        description,
-        origin,
-        currentUrl,
-        pageIndex,
-        beatsSoFar: succeeded(),
-        visitedPaths,
-        claimedHints: [...claimed],
-        elementLines: elementsForPrompt(elements),
-        siteType: site.type,
-        hasPlayground: Boolean(playground),
-      });
+      let plan;
+      try {
+        plan = await planPage({
+          title,
+          description,
+          origin,
+          currentUrl,
+          pageIndex,
+          beatsSoFar: succeeded(),
+          visitedPaths,
+          claimedHints: [...claimed],
+          elementLines: elementsForPrompt(elements),
+          siteType: site.type,
+          hasPlayground: Boolean(playground),
+        });
+      } catch (err) {
+        console.warn(
+          `[agent] planPage failed: ${err instanceof Error ? err.message : err}`,
+        );
+        if (succeeded() === 0 && pageIndex === 0) {
+          await filmMinimalLanding(elements);
+          done = true;
+          break;
+        }
+        // Already filmed something — end gracefully with what we have.
+        done = true;
+        break;
+      }
 
       if (cameraMode) {
         // Never inject /app entry. Steer toward How it works instead.

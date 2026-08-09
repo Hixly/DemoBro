@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 import { assertSafePublicUrl } from "./ssrf.js";
 import { resolveStep } from "./resolve-selectors.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
+import { probeLiveUrl, toUserFacingError } from "./job-utils.js";
 
 const VIEWPORT = { width: 1920, height: 1080 };
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
@@ -386,18 +387,23 @@ async function drawSampleOnCanvas(page) {
 async function safeGoto(page, url) {
   const before = await assertSafePublicUrl(url);
   if (!before.ok) {
-    throw new Error(before.error);
+    throw new Error(toUserFacingError(new Error(before.error)));
   }
 
-  const response = await page.goto(before.url.toString(), {
-    waitUntil: "domcontentloaded",
-    timeout: 30_000,
-  });
+  let response;
+  try {
+    response = await page.goto(before.url.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+  } catch (err) {
+    throw new Error(toUserFacingError(err));
+  }
 
   const finalUrl = page.url();
   const after = await assertSafePublicUrl(finalUrl);
   if (!after.ok) {
-    throw new Error(`Blocked after redirect: ${after.error}`);
+    throw new Error(toUserFacingError(new Error(after.error)));
   }
 
   return response;
@@ -547,9 +553,13 @@ export async function recordStoryboard(options) {
   const videoDir = path.join(outputDir, "raw", jobId);
   await mkdir(videoDir, { recursive: true });
 
+  const probed = await probeLiveUrl(liveUrl);
+  if (!probed.ok) {
+    throw new Error(probed.error);
+  }
   const safe = await assertSafePublicUrl(liveUrl);
   if (!safe.ok) {
-    throw new Error(safe.error);
+    throw new Error(toUserFacingError(new Error(safe.error)));
   }
 
   const origin = safe.url.origin;

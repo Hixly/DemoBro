@@ -34,6 +34,10 @@ type JobPoll = {
   error?: string | null;
 };
 
+/** Client-side backstop so "Discovering…" never spins forever. */
+const CLIENT_JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const POLL_FAIL_STREAK_LIMIT = 5;
+
 export function InputForm() {
   const [liveUrl, setLiveUrl] = useState("");
   const [githubUrl, setGithubUrl] = useState("");
@@ -47,6 +51,8 @@ export function InputForm() {
   const [job, setJob] = useState<JobPoll | null>(null);
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollStartedRef = useRef<number>(0);
+  const pollFailStreakRef = useRef(0);
   const notifiedRef = useRef(false);
   const notifyEnabledRef = useRef(false);
   const projectTitleRef = useRef<string | undefined>(undefined);
@@ -73,19 +79,45 @@ export function InputForm() {
     }
   }
 
+  function failWorking(message: string) {
+    stopPolling();
+    setStage("input");
+    setError(message);
+  }
+
   function startPolling(jobId: string) {
     stopPolling();
+    pollStartedRef.current = Date.now();
+    pollFailStreakRef.current = 0;
     const tick = async () => {
+      if (
+        pollStartedRef.current &&
+        Date.now() - pollStartedRef.current > CLIENT_JOB_TIMEOUT_MS
+      ) {
+        failWorking(
+          "This is taking too long. Check your links and try again.",
+        );
+        return;
+      }
+
       try {
         const res = await fetch(`/api/jobs/${jobId}`);
         const payload = (await res.json().catch(() => null)) as JobPoll & {
           error?: string;
         } | null;
         if (!res.ok || !payload) {
+          pollFailStreakRef.current += 1;
           setError(payload?.error ?? `Job status failed (${res.status})`);
+          if (pollFailStreakRef.current >= POLL_FAIL_STREAK_LIMIT) {
+            failWorking(
+              payload?.error ??
+                "Lost connection while checking your demo. Please try again.",
+            );
+          }
           return;
         }
 
+        pollFailStreakRef.current = 0;
         setJob(payload);
         if (payload.status === "ready" && payload.videoUrl) {
           stopPolling();
@@ -108,12 +140,17 @@ export function InputForm() {
           setStage("ready");
           setError(null);
         } else if (payload.status === "failed" || payload.status === "expired") {
-          stopPolling();
-          setStage("input");
-          setError(payload.error ?? "Recording failed.");
+          failWorking(payload.error ?? "Recording failed. Please try again.");
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Polling failed.");
+        pollFailStreakRef.current += 1;
+        const msg = err instanceof Error ? err.message : "Polling failed.";
+        setError(msg);
+        if (pollFailStreakRef.current >= POLL_FAIL_STREAK_LIMIT) {
+          failWorking(
+            "Lost connection while checking your demo. Please try again.",
+          );
+        }
       }
     };
 
@@ -170,11 +207,30 @@ export function InputForm() {
     setStage("reading");
 
     try {
-      const ingestRes = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ githubUrl: githubUrl.trim() }),
-      });
+      const ingestController = new AbortController();
+      const ingestTimer = window.setTimeout(
+        () => ingestController.abort(),
+        45_000,
+      );
+      let ingestRes: Response;
+      try {
+        ingestRes = await fetch("/api/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ githubUrl: githubUrl.trim() }),
+          signal: ingestController.signal,
+        });
+      } catch (err) {
+        const name = err && typeof err === "object" ? (err as { name?: string }).name : "";
+        if (name === "AbortError") {
+          throw new Error(
+            "Reading that repo took too long. Enter a title manually or try again.",
+          );
+        }
+        throw err;
+      } finally {
+        window.clearTimeout(ingestTimer);
+      }
 
       if (!ingestRes.ok) {
         const payload = (await ingestRes.json().catch(() => null)) as {
@@ -272,6 +328,9 @@ export function InputForm() {
         notifyEnabled={notifyEnabled}
         onNotifyChange={setNotifyEnabled}
         error={error}
+        onCancel={() =>
+          failWorking("Cancelled. Fix your links and try again.")
+        }
       />,
     );
   }
@@ -408,12 +467,17 @@ export function InputForm() {
       </p>
 
       {error ? (
-        <p
+        <div
           role="alert"
-          className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-center font-heading text-sm font-semibold text-danger rotate-1"
+          className="rounded-xl border-2 border-danger/40 bg-white px-3 py-3 text-center rotate-1"
         >
-          {error}
-        </p>
+          <p className="font-heading text-sm font-semibold text-danger">
+            {error}
+          </p>
+          <p className="mt-1 text-[12px] font-medium text-ink/55">
+            Fix the links above and hit Generate demo to try again.
+          </p>
+        </div>
       ) : null}
     </form>,
   );

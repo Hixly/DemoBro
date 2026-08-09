@@ -88,6 +88,32 @@ export async function markJobStatus(jobId, status, stage, extra = {}) {
 }
 
 /**
+ * Fail jobs whose worker died or was redeployed mid-run. Without this a claimed
+ * job keeps its in-progress status forever and the browser spins indefinitely.
+ * @param {number} olderThanMs
+ * @returns {Promise<string[]>} ids that were swept
+ */
+export async function reapStaleJobs(olderThanMs) {
+  const supabase = getSupabaseAdmin();
+  const now = Date.now();
+  const { data, error } = await supabase
+    .from("jobs")
+    .update({
+      status: "failed",
+      stage: "failed",
+      error_message: "This demo stalled and was stopped. Please try again.",
+      updated_at: new Date(now).toISOString(),
+      expires_at: new Date(now + 2 * 60 * 60 * 1000).toISOString(),
+    })
+    .in("status", ["recording", "rendering"])
+    .lt("claimed_at", new Date(now - olderThanMs).toISOString())
+    .select("id");
+
+  if (error) throw new Error(`Stale sweep failed: ${error.message}`);
+  return (data ?? []).map((row) => row.id);
+}
+
+/**
  * Claim the oldest queued job (single-row UPDATE … RETURNING via filter).
  */
 export async function claimNextJob(workerId) {

@@ -13,6 +13,8 @@ type Props = {
   error?: string | null;
   notifyEnabled: boolean;
   onNotifyChange: (enabled: boolean) => void;
+  /** Optional escape hatch so the wait screen never traps the user. */
+  onCancel?: () => void;
 };
 
 function shuffleFacts(pool: string[]): string[] {
@@ -29,6 +31,7 @@ export function RenderWait({
   error = null,
   notifyEnabled,
   onNotifyChange,
+  onCancel,
 }: Props) {
   const reduceMotion = useReducedMotion();
   const [notifyHint, setNotifyHint] = useState<string | null>(null);
@@ -200,6 +203,16 @@ export function RenderWait({
         <p role="alert" className="text-center text-sm font-medium text-danger">
           {error}
         </p>
+      ) : null}
+
+      {onCancel ? (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="font-heading text-sm font-semibold text-ink/55 underline-offset-2 hover:underline"
+        >
+          Cancel and try again
+        </button>
       ) : null}
     </div>
   );

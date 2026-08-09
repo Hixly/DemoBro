@@ -17,6 +17,11 @@ RUN npm install --omit=dev
 COPY src ./src
 COPY assets ./assets
 
+# The base image drops to `pwuser`, but /app is root-owned, so the worker needs
+# an explicitly writable scratch dir for raw captures and renders.
+ENV DEMOBRO_OUTPUT_DIR=/app/output
+RUN mkdir -p /app/output && chown -R pwuser:pwuser /app/output
+
 USER pwuser
 
 CMD ["npm", "start"]

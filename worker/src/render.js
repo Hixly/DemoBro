@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderCardPng, W, H } from "./cards.js";
+import { RENDER_TIMEOUT_MS } from "./job-utils.js";
 
 const TITLE_SECS = 2.8;
 const OUTRO_SECS = 3.0;
@@ -26,6 +27,7 @@ const SFX_WHOOSH = path.resolve(__dirname, "../assets/sfx/whoosh.wav");
 const CAPTION_FADE = 0.2;
 
 function run(cmd, args, opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs ?? RENDER_TIMEOUT_MS);
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -33,11 +35,30 @@ function run(cmd, args, opts = {}) {
       ...opts,
     });
     let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+      reject(new Error(`${cmd} timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
     child.stderr.on("data", (d) => {
       stderr += d.toString();
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) resolve(stderr);
       else reject(new Error(`${cmd} failed (${code}): ${stderr.slice(-800)}`));
     });
