@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 import { renderCardPng, W, H } from "./cards.js";
 import { RENDER_TIMEOUT_MS } from "./job-utils.js";
 
+/**
+ * x264 allocates frame buffers per thread and defaults to ~1.5x the host's core
+ * count, which the container sees in full while its memory ceiling is far
+ * smaller — at 1080p that gets the encoder OOM-killed mid-render.
+ */
+const X264_THREADS = process.env.DEMOBRO_FFMPEG_THREADS || "2";
+
 const TITLE_SECS = 2.8;
 const OUTRO_SECS = 3.0;
 const XFADE = 0.55;
@@ -55,11 +62,13 @@ function run(cmd, args, opts = {}) {
       clearTimeout(timer);
       reject(err);
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (code === 0) resolve(stderr);
+      // A null code means the kernel signalled us (SIGKILL is almost always OOM).
+      else if (signal) reject(new Error(`${cmd} killed by ${signal}: ${stderr.slice(-400)}`));
       else reject(new Error(`${cmd} failed (${code}): ${stderr.slice(-800)}`));
     });
   });
@@ -719,6 +728,8 @@ async function pngToFadedClip(pngPath, outPath, durationSec) {
     "30",
     "-c:v",
     "libx264",
+    "-threads",
+    X264_THREADS,
     "-pix_fmt",
     "yuv420p",
     outPath,
@@ -851,6 +862,8 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-an",
       "-c:v",
       "libx264",
+      "-threads",
+      X264_THREADS,
       "-pix_fmt",
       "yuv420p",
       "-r",
@@ -885,6 +898,8 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-an",
       "-c:v",
       "libx264",
+      "-threads",
+      X264_THREADS,
       "-pix_fmt",
       "yuv420p",
       "-r",
@@ -960,6 +975,8 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-an",
       "-c:v",
       "libx264",
+      "-threads",
+      X264_THREADS,
       "-pix_fmt",
       "yuv420p",
       "-r",
@@ -1045,6 +1062,8 @@ async function concatCuts(inputs, outPath) {
     listPath,
     "-c:v",
     "libx264",
+    "-threads",
+    X264_THREADS,
     "-pix_fmt",
     "yuv420p",
     "-r",
@@ -1109,6 +1128,8 @@ async function concatWithXfade(inputs, outPath, fadeSec = XFADE) {
   args.push(
     "-c:v",
     "libx264",
+    "-threads",
+    X264_THREADS,
     "-pix_fmt",
     "yuv420p",
     "-r",
