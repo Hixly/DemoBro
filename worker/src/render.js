@@ -907,16 +907,20 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
     const t0 = pulse.t0.toFixed(3);
     const t1 = pulse.t1.toFixed(3);
     // Cursor eases toward the action, then click ring pulses.
+    // Tip of the arrow asset sits near (4,4) in a 64px source → ~2px at 36px.
+    const curSize = 36;
+    const tipX = 2;
+    const tipY = 2;
     const x0 = Math.max(0, pulse.ax - 140);
     const y0 = Math.max(0, pulse.ay - 100);
     const moveT = Math.min(0.45, pulse.t0);
     const captionIdx = 3;
     let filter =
       `[0:v]${pre.join(",")}[base];` +
-      `[1:v]format=rgba,scale=36:36[cur];` +
+      `[1:v]format=rgba,scale=${curSize}:${curSize}[cur];` +
       `[base][cur]overlay=` +
-      `x='${x0}+(${pulse.ax - 18 - x0})*min(1\\,t/${moveT.toFixed(3)})':` +
-      `y='${y0}+(${pulse.ay - 18 - y0})*min(1\\,t/${moveT.toFixed(3)})':` +
+      `x='${x0}+(${pulse.ax - tipX - x0})*min(1\\,t/${moveT.toFixed(3)})':` +
+      `y='${y0}+(${pulse.ay - tipY - y0})*min(1\\,t/${moveT.toFixed(3)})':` +
       `enable='lte(t\\,${t1})':format=auto[aimed];` +
       `[2:v]format=rgba,` +
       `scale=w='max(32\\,trunc((48+220*(t-${t0}))/2)*2)':` +
