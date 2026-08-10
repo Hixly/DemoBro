@@ -11,7 +11,7 @@ import { RENDER_TIMEOUT_MS } from "./job-utils.js";
  * count, which the container sees in full while its memory ceiling is far
  * smaller — at 1080p that gets the encoder OOM-killed mid-render.
  */
-const X264_THREADS = process.env.DEMOBRO_FFMPEG_THREADS || "2";
+const X264_THREADS = process.env.DEMOBRO_FFMPEG_THREADS || "1";
 
 const TITLE_SECS = 2.8;
 const OUTRO_SECS = 3.0;
@@ -33,8 +33,24 @@ const SFX_WHOOSH = path.resolve(__dirname, "../assets/sfx/whoosh.wav");
 /** Caption pill fade in/out (seconds). */
 const CAPTION_FADE = 0.2;
 
+/**
+ * ffmpeg's filter graph and encoder both allocate full frame buffers per
+ * thread, sized from the host's core count rather than the container's much
+ * smaller memory ceiling. At 1080p that is enough to get killed mid-render, so
+ * cap the pools globally.
+ */
+const FFMPEG_THREAD_LIMITS = [
+  "-filter_threads",
+  "1",
+  "-filter_complex_threads",
+  "1",
+];
+
 function run(cmd, args, opts = {}) {
   const timeoutMs = Number(opts.timeoutMs ?? RENDER_TIMEOUT_MS);
+  if (cmd === "ffmpeg" && !args.includes("-filter_threads")) {
+    args = [...FFMPEG_THREAD_LIMITS, ...args];
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -223,7 +239,22 @@ export function planSegments(timeline, totalDurationSec) {
 }
 
 const ZOOM_EASE_SEC = 0.28;
-const ZOOM_MAX = 1.55;
+/**
+ * Web pages run edge to edge, so a hard punch-in slices navs and side rails
+ * mid-word and the shot stops reading as a real product page. Landing beats
+ * therefore stay essentially full-frame and actions punch only enough to draw
+ * the eye to the target.
+ */
+const ZOOM_MAX = 1.2;
+const PAUSE_ZOOM_MAX = 1.06;
+const ACTION_ZOOM_MAX = 1.2;
+/**
+ * Landing beats still need to breathe. The zoom eases from and back to 1.0, so
+ * a small peak reads as a gentle settle and the beat opens and closes on the
+ * uncropped page.
+ */
+const PAUSE_ZOOM_MIN = 1.04;
+/** Breathing room kept around an action target, in source pixels. */
 const ZOOM_PAD_PX = 140;
 const SPOTLIGHT_PAD = 48;
 
@@ -401,75 +432,52 @@ export function shortenCaption(description) {
  * - Punch-ins: keep the target comfortably in view, but bias toward content CoM
  *   and clamp so we never slam into a one-sided dead edge.
  */
-function computeFramedZoom(box, contentBounds) {
+export function computeFramedZoom(box, contentBounds, stepKind = "pause") {
   const content =
-    normalizeContentBounds(contentBounds) ||
-    (box
-      ? normalizeContentBounds({
-          x: Math.max(0, box.x - 80),
-          y: Math.max(0, box.y - 80),
-          w: Math.min(W, box.w + 160),
-          h: Math.min(H, box.h + 160),
-        })
-      : null) ||
-    { x: 0, y: 0, w: W, h: H };
+    normalizeContentBounds(contentBounds) || { x: 0, y: 0, w: W, h: H };
 
-  const cCx = content.x + content.w / 2;
-  const cCy = content.y + content.h / 2;
-  const narrowX = content.w < W * 0.82;
-  const narrowY = content.h < H * 0.72;
-  const offCenterX =
-    Math.abs(cCx - W / 2) > W * 0.08 ||
-    content.x > W * 0.06 ||
-    content.x + content.w < W * 0.94;
+  const isAction = stepKind === "click" || stepKind === "type";
+  const ceiling = isAction ? ACTION_ZOOM_MAX : PAUSE_ZOOM_MAX;
 
-  // Zoom enough to fill the frame with the content cluster (balanced).
-  let contentZoom = 1;
-  if (narrowX || narrowY || offCenterX) {
-    const fillX = W / Math.max(content.w * 1.08, 1);
-    const fillY = H / Math.max(content.h * 1.1, 1);
-    contentZoom = Math.min(ZOOM_MAX, Math.max(1, Math.min(fillX, fillY)));
-    // Don't overpunch short full-width heroes.
-    if (!narrowX && content.w >= W * 0.88) {
-      contentZoom = Math.min(contentZoom, 1.12);
-    }
-  }
+  // Only crop into margins we can prove are empty. Cropping symmetrically by
+  // the smaller margin keeps the measured content whole; going further starts
+  // eating the page itself.
+  const slackX = Math.max(0, Math.min(content.x, W - (content.x + content.w)));
+  const slackY = Math.max(0, Math.min(content.y, H - (content.y + content.h)));
+  const safeZoom = Math.max(
+    1,
+    Math.min(W / Math.max(W - 2 * slackX, 1), H / Math.max(H - 2 * slackY, 1)),
+  );
 
-  let zoomPeak = Math.max(1.22, contentZoom);
-  let cx = cCx;
-  let cy = cCy;
-
-  if (box && Number.isFinite(box.x) && box.w > 0 && box.h > 0) {
-    const tCx = box.x + box.w / 2;
-    const tCy = box.y + box.h / 2;
+  let zoomPeak = 1;
+  if (isAction && box && Number.isFinite(box.x) && box.w > 0 && box.h > 0) {
+    // Enough for the target to read clearly — not enough to fill the frame
+    // with it, which is what used to crop the layout away.
     const need = Math.min(
       W / Math.max(box.w + ZOOM_PAD_PX * 2, 1),
       H / Math.max(box.h + ZOOM_PAD_PX * 2, 1),
     );
-    const targetZoom = Math.min(
-      ZOOM_MAX,
-      Math.max(1.28, Number.isFinite(need) ? need : ZOOM_MAX),
-    );
-    zoomPeak = Math.min(ZOOM_MAX, Math.max(zoomPeak, targetZoom));
+    if (Number.isFinite(need)) zoomPeak = Math.max(1, need);
+  }
+  zoomPeak = Math.min(
+    ceiling,
+    Math.max(zoomPeak, safeZoom, isAction ? 1 : PAUSE_ZOOM_MIN),
+  );
 
-    // Wide bottom CTAs: keep form framed, not footer.
-    if (isWideBottomCta(box)) {
-      zoomPeak = Math.min(zoomPeak, 1.14);
-      cx = cCx;
-      cy = Math.min(H * 0.52, Math.max(H * 0.42, box.y - 260));
-    } else {
-      // Bias punch toward content center of mass (stronger on off-center pages).
-      const blend = narrowX || offCenterX ? 0.42 : 0.28;
-      cx = tCx * (1 - blend) + cCx * blend;
-      cy = tCy * (1 - blend) + cCy * blend;
+  // Centred layouts are overwhelmingly the norm, so anchor to the page centre
+  // and let the target pull the frame only when it truly sits off to one side.
+  let cx = W / 2;
+  let cy = content.y + content.h / 2;
+  if (isAction && box && box.w > 0 && box.h > 0) {
+    const tCx = box.x + box.w / 2;
+    cy = box.y + box.h / 2;
+    if (Math.abs(tCx - W / 2) > W * 0.2) {
+      cx = tCx * 0.55 + (W / 2) * 0.45;
     }
-  } else {
-    // No target — gentle content-centered punch.
-    zoomPeak = Math.max(contentZoom > 1.02 ? contentZoom : 1.22, contentZoom);
   }
 
   // Finalize crop center for this peak zoom.
-  const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box, content });
+  const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box });
   return {
     zoomPeak: placed.zoom,
     cx: placed.cx,
@@ -484,66 +492,37 @@ function computeFramedZoom(box, contentBounds) {
  * 2) target (if any) stays inside the crop with padding
  * 3) when content fits in the crop, we center on content (no one-sided dead margin)
  */
-function placeZoomCenter({ cx, cy, zoom, box, content }) {
-  let z = Math.max(1, Math.min(ZOOM_MAX, zoom));
-  let winW = W / z;
-  let winH = H / z;
+function placeZoomCenter({ cx, cy, zoom, box }) {
+  const z = Math.max(1, Math.min(ZOOM_MAX, zoom));
+  const winW = W / z;
+  const winH = H / z;
 
-  const clampToFrame = (x, y, ww, wh) => ({
-    x: Math.max(ww / 2, Math.min(W - ww / 2, x)),
-    y: Math.max(wh / 2, Math.min(H - wh / 2, y)),
+  const clampToFrame = (x, y) => ({
+    x: Math.max(winW / 2, Math.min(W - winW / 2, x)),
+    y: Math.max(winH / 2, Math.min(H - winH / 2, y)),
   });
 
-  // If content fits inside the crop window, lock to content center — balanced.
-  if (content.w <= winW * 0.98 && content.h <= winH * 0.98) {
-    const locked = clampToFrame(content.x + content.w / 2, content.y + content.h / 2, winW, winH);
-    return { zoom: z, cx: locked.x, cy: locked.y };
-  }
-
-  // Keep target inside crop with pad when punching in.
-  if (box && box.w > 0 && box.h > 0 && !isWideBottomCta(box)) {
-    const pad = Math.min(ZOOM_PAD_PX, 100);
-    const tLeft = box.x - pad;
-    const tRight = box.x + box.w + pad;
-    const tTop = box.y - pad;
-    const tBottom = box.y + box.h + pad;
-    if (tRight - tLeft <= winW) {
-      const lo = tRight - winW / 2;
-      const hi = tLeft + winW / 2;
+  // Guarantee the target stays inside the crop with breathing room, nudging the
+  // centre the minimum amount needed rather than recentring on the target.
+  if (box && box.w > 0 && box.h > 0) {
+    const pad = 64;
+    if (box.w + pad * 2 <= winW) {
+      const lo = box.x + box.w + pad - winW / 2;
+      const hi = box.x - pad + winW / 2;
       if (lo <= hi) cx = Math.max(lo, Math.min(hi, cx));
     } else {
       cx = box.x + box.w / 2;
     }
-    if (tBottom - tTop <= winH) {
-      const lo = tBottom - winH / 2;
-      const hi = tTop + winH / 2;
+    if (box.h + pad * 2 <= winH) {
+      const lo = box.y + box.h + pad - winH / 2;
+      const hi = box.y - pad + winH / 2;
       if (lo <= hi) cy = Math.max(lo, Math.min(hi, cy));
     } else {
       cy = box.y + box.h / 2;
     }
   }
 
-  // Pull toward content CoM so leftover void isn't all on one side.
-  const cCx = content.x + content.w / 2;
-  const cCy = content.y + content.h / 2;
-  cx = cx * 0.72 + cCx * 0.28;
-  cy = cy * 0.72 + cCy * 0.28;
-
-  let placed = clampToFrame(cx, cy, winW, winH);
-
-  // Symmetric dead-margin preference: if crop shows content with uneven
-  // empty bands outside the content column, nudge toward content center.
-  const cropLeft = placed.x - winW / 2;
-  const cropRight = placed.x + winW / 2;
-  const emptyLeft = Math.max(0, content.x - cropLeft);
-  const emptyRight = Math.max(0, cropRight - (content.x + content.w));
-  if (emptyLeft + emptyRight > 8) {
-    const skew = emptyRight - emptyLeft;
-    if (Math.abs(skew) > 40) {
-      placed = clampToFrame(placed.x + skew * 0.45, placed.y, winW, winH);
-    }
-  }
-
+  const placed = clampToFrame(cx, cy);
   return { zoom: z, cx: placed.x, cy: placed.y };
 }
 
@@ -551,7 +530,7 @@ function placeZoomCenter({ cx, cy, zoom, box, content }) {
  * Zoom with smoothstep ease in/out (~0.45s), hold, clamped crop.
  * Frames around content bounds; punch-ins stay balanced.
  */
-function buildZoomFilter(box, outDur, contentBounds = null) {
+function buildZoomFilter(box, outDur, contentBounds = null, stepKind = "pause") {
   const fps = 30;
   const total = Math.max(2, Math.round(outDur * fps));
   const easeN = Math.max(
@@ -560,11 +539,11 @@ function buildZoomFilter(box, outDur, contentBounds = null) {
   );
   const holdEnd = Math.max(easeN, total - easeN);
 
-  const framed = computeFramedZoom(box, contentBounds);
+  const framed = computeFramedZoom(box, contentBounds, stepKind);
   const { zoomPeak, cx, cy, content } = framed;
 
   console.log(
-    `[render] zoom peak=${zoomPeak.toFixed(2)}x center=(${cx.toFixed(0)},${cy.toFixed(0)})` +
+    `[render] zoom peak=${zoomPeak.toFixed(2)}x kind=${stepKind} center=(${cx.toFixed(0)},${cy.toFixed(0)})` +
       (box ? ` box=${Math.round(box.w)}x${Math.round(box.h)}` : " box=null") +
       ` content=${Math.round(content.w)}x${Math.round(content.h)}@(${Math.round(content.x)},${Math.round(content.y)})`,
   );
@@ -817,7 +796,12 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const outDur = dur / speed;
   const fadeOutStart = Math.max(0, outDur - 0.25);
   const outDurS = outDur.toFixed(3);
-  const zoom = buildZoomFilter(seg.box ?? null, outDur, seg.contentBounds ?? null);
+  const zoom = buildZoomFilter(
+    seg.box ?? null,
+    outDur,
+    seg.contentBounds ?? null,
+    seg.stepKind ?? "pause",
+  );
   const pulse = clickPulsePlan(seg, outDur);
   // Spotlight only through ease-in / just past the action — never for the whole beat.
   // Skip on wide bottom CTAs: post-click layout shift parks the hole on footer junk.
@@ -1235,8 +1219,20 @@ export async function renderDemo(opts) {
     const clipPaths = [];
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
-      await extractSegment(opts.rawVideoPath, segments[i], clip, speed);
-      clipPaths.push(clip);
+      try {
+        await extractSegment(opts.rawVideoPath, segments[i], clip, speed);
+        clipPaths.push(clip);
+      } catch (err) {
+        // Losing one beat is far better than losing the whole demo, so drop it
+        // and keep cutting — the tour still reads with the remaining beats.
+        console.warn(
+          `[render] beat ${i + 1}/${segments.length} failed, dropping it: ` +
+            `${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+    if (!clipPaths.length && segments.length) {
+      throw new Error("Every beat failed to render.");
     }
 
     const bodyPath = path.join(tmp, "body.mp4");

@@ -172,10 +172,28 @@ function firstReadmeParagraph(readme: string): string | null {
   return text.length > 180 ? `${text.slice(0, 177).trimEnd()}…` : text;
 }
 
+/**
+ * Plenty of READMEs open with setup instructions rather than the product name,
+ * and the first heading then becomes the on-screen title and "Meet …" caption.
+ * A title is a name, so reject headings that read as an instruction or a
+ * standard section header.
+ */
+const SECTION_HEADING =
+  /^(clone|install|installing|installation|getting[ -]started|get[ -]started|set[ -]?up|setup|usage|how[ -]to|quick[ -]?start|introduction|intro|overview|about|features|prerequisites|requirements|contributing|contribution|license|licence|changelog|roadmap|documentation|docs|deploy|deployment|running|run|build|building|test|testing|development|env|configuration|config|todo|credits|acknowledgements|table of contents|contents)\b/i;
+
 function readmeTitle(readme: string): string | null {
   const match = readme.match(/^#\s+(.+)$/m);
   if (!match) return null;
-  return match[1].replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim() || null;
+  const heading = match[1]
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[#*`_]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!heading) return null;
+  if (SECTION_HEADING.test(heading)) return null;
+  // Product names are short; a long heading is a sentence, not a name.
+  if (heading.split(/\s+/).length > 6) return null;
+  return heading;
 }
 
 function decodeReadme(body: unknown): string {
