@@ -432,7 +432,7 @@ export function shortenCaption(description) {
  * - Punch-ins: keep the target comfortably in view, but bias toward content CoM
  *   and clamp so we never slam into a one-sided dead edge.
  */
-export function computeFramedZoom(box, contentBounds, stepKind = "pause") {
+function computeFramedZoom(box, contentBounds, stepKind = "pause") {
   const content =
     normalizeContentBounds(contentBounds) || { x: 0, y: 0, w: W, h: H };
 
