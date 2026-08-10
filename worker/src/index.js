@@ -14,6 +14,7 @@ import {
 } from "./upload.js";
 import {
   JOB_TIMEOUT_MS,
+  killOrphanBrowsers,
   resolveWritableDir,
   toUserFacingError,
   withTimeout,
@@ -119,6 +120,9 @@ async function processJob(job) {
     );
   } catch (err) {
     alive = false;
+    // Job timeout often fires while Playwright is stuck closing — wipe the
+    // zombie so the next claim can launch a browser again.
+    await killOrphanBrowsers().catch(() => {});
     await failJob(job.id, err, videoDir);
   }
 }

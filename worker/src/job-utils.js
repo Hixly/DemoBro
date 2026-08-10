@@ -2,11 +2,15 @@
  * Shared hardening helpers: timeouts, live-URL probe, user-facing errors.
  */
 
-import { access, mkdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { assertSafePublicUrl } from "./ssrf.js";
+
+const execFileAsync = promisify(execFile);
 
 /** Hard ceiling for an entire job (record + render + upload). */
 export const JOB_TIMEOUT_MS = Number(
@@ -71,6 +75,83 @@ export function withTimeout(promise, ms, message) {
 }
 
 /**
+ * This worker runs one job at a time. A hung Playwright close can leave a
+ * headless_shell zombie that then blocks every subsequent chromium.launch for
+ * 180s — so wipe orphans between jobs and after forced teardowns.
+ */
+export async function killOrphanBrowsers() {
+  const patterns = ["headless_shell", "chrome-linux", "chromium"];
+  for (const pattern of patterns) {
+    try {
+      await execFileAsync("pkill", ["-9", "-f", pattern], { timeout: 3000 });
+    } catch {
+      // pkill exits 1 when nothing matched — that's the happy path.
+    }
+  }
+}
+
+/**
+ * Close a Playwright browser with a hard ceiling. context.close() waits for
+ * video finalization and has been observed to hang for minutes on some sites;
+ * past the ceiling we SIGKILL the child so the poller can claim the next job.
+ *
+ * @param {import('playwright').Browser | null | undefined} browser
+ * @param {import('playwright').BrowserContext | null | undefined} context
+ * @param {number} [timeoutMs]
+ */
+export async function closeBrowserSafely(browser, context, timeoutMs = 15_000) {
+  const close = (async () => {
+    if (context) await context.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
+  })();
+
+  try {
+    await withTimeout(close, timeoutMs, "browser close timed out");
+  } catch (err) {
+    console.warn(
+      `[browser] ${err instanceof Error ? err.message : err}; force-killing`,
+    );
+    try {
+      const proc = browser?.process?.();
+      if (proc && !proc.killed) proc.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
+    await killOrphanBrowsers();
+  }
+}
+
+/**
+ * After a forced teardown, video.path() may never resolve — pick the newest
+ * webm Playwright left in the capture directory instead.
+ * @param {string} videoDir
+ * @returns {Promise<string | null>}
+ */
+export async function findNewestWebm(videoDir) {
+  try {
+    const names = await readdir(videoDir);
+    let best = null;
+    let bestMtime = -1;
+    for (const name of names) {
+      if (!name.endsWith(".webm")) continue;
+      const full = path.join(videoDir, name);
+      try {
+        const info = await stat(full);
+        if (info.mtimeMs > bestMtime) {
+          bestMtime = info.mtimeMs;
+          best = full;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Retry an async fn with linear backoff. Only retries retryable failures.
  * @template T
  * @param {() => Promise<T>} fn
@@ -132,6 +213,9 @@ export function toUserFacingError(err) {
     )
   ) {
     return "Couldn't reach that URL.";
+  }
+  if (/browserType\.launch|Executable doesn't exist/i.test(msg)) {
+    return "The recorder couldn't start. Please try again.";
   }
   if (
     /ERR_CONNECTION_TIMED_OUT|ETIMEDOUT|Navigation timeout|Timeout \d+ms exceeded|took too long to respond|Probe timed out/i.test(

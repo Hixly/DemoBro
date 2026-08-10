@@ -4,7 +4,14 @@ import { chromium } from "playwright";
 import { assertSafePublicUrl } from "./ssrf.js";
 import { resolveStep } from "./resolve-selectors.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
-import { probeLiveUrl, toUserFacingError } from "./job-utils.js";
+import {
+  closeBrowserSafely,
+  findNewestWebm,
+  killOrphanBrowsers,
+  probeLiveUrl,
+  toUserFacingError,
+  withTimeout,
+} from "./job-utils.js";
 
 const VIEWPORT = { width: 1920, height: 1080 };
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
@@ -567,12 +574,14 @@ export async function recordStoryboard(options) {
   const reports = [];
   let videoPath = null;
 
+  await killOrphanBrowsers();
   const browser = await chromium.launch({
     headless: true,
     args: [
       "--use-fake-device-for-media-stream",
       "--use-fake-ui-for-media-stream",
       "--autoplay-policy=no-user-gesture-required",
+      "--disable-dev-shm-usage",
     ],
   });
 
@@ -683,17 +692,34 @@ export async function recordStoryboard(options) {
   }
 
   const video = page.video();
-  await context.close();
-  await browser.close();
+  await closeBrowserSafely(browser, context, 15_000);
 
   if (video) {
-    const tempPath = await video.path();
-    const finalPath = path.join(videoDir, "recording.webm");
-    await rename(tempPath, finalPath).catch(async () => {
-      // If rename across devices fails, leave playwright filename
-      videoPath = tempPath;
-    });
-    if (!videoPath) videoPath = finalPath;
+    try {
+      const tempPath = await withTimeout(
+        video.path(),
+        10_000,
+        "video.path timed out",
+      );
+      const finalPath = path.join(videoDir, "recording.webm");
+      await rename(tempPath, finalPath).catch(() => {
+        videoPath = tempPath;
+      });
+      if (!videoPath) videoPath = finalPath;
+    } catch (err) {
+      console.warn(
+        `[record] video finalize soft-fail: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+      videoPath = (await findNewestWebm(videoDir)) || videoPath;
+    }
+  }
+  if (!videoPath) {
+    videoPath = await findNewestWebm(videoDir);
+  }
+  if (!videoPath) {
+    throw new Error("Recording finished but no video file was written.");
   }
 
   return {
