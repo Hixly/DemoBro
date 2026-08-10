@@ -245,17 +245,17 @@ const ZOOM_EASE_SEC = 0.28;
  * therefore stay essentially full-frame and actions punch only enough to draw
  * the eye to the target.
  */
-const ZOOM_MAX = 1.1;
-const PAUSE_ZOOM_MAX = 1.05;
-const ACTION_ZOOM_MAX = 1.1;
+const ZOOM_MAX = 1.85;
 /**
- * Landing beats still need to breathe. The zoom eases from and back to 1.0, so
- * a small peak reads as a gentle settle and the beat opens and closes on the
- * uncropped page.
+ * Fill-zoom ceilings. Centered app columns (e.g. max-width hero on a 1920
+ * canvas) leave huge empty side gutters — we zoom just enough to put the real
+ * UI edge-to-edge, never past the measured chrome.
  */
-const PAUSE_ZOOM_MIN = 1.03;
+const PAUSE_ZOOM_MAX = 1.7;
+const ACTION_ZOOM_MAX = 1.85;
+const PAUSE_ZOOM_MIN = 1.04;
 /** Breathing room kept around an action target, in source pixels. */
-const ZOOM_PAD_PX = 180;
+const ZOOM_PAD_PX = 160;
 const SPOTLIGHT_PAD = 48;
 
 function normalizeContentBounds(raw) {
@@ -439,41 +439,61 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
   const isAction = stepKind === "click" || stepKind === "type";
   const kindCeiling = isAction ? ACTION_ZOOM_MAX : PAUSE_ZOOM_MAX;
 
-  // safeZoom is a CEILING: only crop into margins we can prove are empty.
-  // Using it as a floor (the old bug) let action beats punch to 1.2x even when
-  // that sliced off the logo while keeping the right-side nav — looking like
-  // the whole page had been shoved sideways.
+  // Slack = empty margin outside measured chrome. Zooming further than
+  // safeZoom crops real UI (logo / nav) and the shot stops looking centered.
   const slackX = Math.max(0, Math.min(content.x, W - (content.x + content.w)));
   const slackY = Math.max(0, Math.min(content.y, H - (content.y + content.h)));
-  const safeZoom = Math.max(
-    1,
-    Math.min(W / Math.max(W - 2 * slackX, 1), H / Math.max(H - 2 * slackY, 1)),
-  );
-  const ceiling = Math.min(kindCeiling, safeZoom);
+  const safeZoomX = Math.max(1, W / Math.max(W - 2 * slackX, 1));
+  const safeZoomY = Math.max(1, H / Math.max(H - 2 * slackY, 1));
 
-  let zoomPeak = isAction ? 1 : PAUSE_ZOOM_MIN;
+  // Fill zoom: put the app column edge-to-edge when the page is a narrow
+  // centered card on a wide canvas (the common SaaS landing layout). A
+  // full-height column still has empty side gutters — don't let fillY (≈1)
+  // suppress the horizontal fill.
+  const narrowX = content.w < W * 0.82;
+  const narrowY = content.h < H * 0.72;
+  const fillX = W / Math.max(content.w * 1.06, 1);
+  const fillY = H / Math.max(content.h * 1.08, 1);
+  let fillZoom = 1;
+  if (narrowX && narrowY) fillZoom = Math.min(fillX, fillY);
+  else if (narrowX) fillZoom = fillX;
+  else if (narrowY) fillZoom = fillY;
+  fillZoom = Math.max(1, fillZoom);
+  if (content.w >= W * 0.92) fillZoom = Math.min(fillZoom, 1.06);
+
+  // Only the axis we're filling limits safe zoom. A full-height column has
+  // ~0 vertical slack, which must not block horizontal fill.
+  const safeZoom =
+    narrowX && !narrowY
+      ? safeZoomX
+      : narrowY && !narrowX
+        ? safeZoomY
+        : Math.min(safeZoomX, safeZoomY);
+
+  let zoomPeak = Math.max(isAction ? 1 : PAUSE_ZOOM_MIN, fillZoom);
+
   if (isAction && box && Number.isFinite(box.x) && box.w > 0 && box.h > 0) {
-    // Gentle enough that the target reads; never enough to fill the frame.
     const need = Math.min(
       W / Math.max(box.w + ZOOM_PAD_PX * 2, 1),
       H / Math.max(box.h + ZOOM_PAD_PX * 2, 1),
     );
     if (Number.isFinite(need) && need > 1) {
-      zoomPeak = Math.min(ceiling, Math.max(1, need));
+      // Don't let a tiny target drag us past a balanced fill of the page.
+      zoomPeak = Math.max(zoomPeak, Math.min(need, fillZoom * 1.08));
     }
   }
-  zoomPeak = Math.min(ceiling, Math.max(zoomPeak, isAction ? 1 : PAUSE_ZOOM_MIN));
 
-  // Always anchor to the page centre. Side-pulling the crop is what made
-  // balanced sites look off-centre once header chrome was in frame.
+  zoomPeak = Math.min(ZOOM_MAX, kindCeiling, safeZoom, zoomPeak);
+
+  // Lock horizontally to the page centre — never drift toward a target. Vertical
+  // may follow the action so low CTAs stay on screen.
   const cx = W / 2;
-  let cy = H / 2;
+  let cy = content.y + content.h / 2;
   if (isAction && box && box.w > 0 && box.h > 0) {
-    // Vertical only — keep the action in view without shifting sideways.
     cy = box.y + box.h / 2;
   }
 
-  const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box });
+  const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box, lockX: true });
   return {
     zoomPeak: placed.zoom,
     cx: placed.cx,
@@ -488,7 +508,7 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
  * 2) target (if any) stays inside the crop with padding
  * 3) when content fits in the crop, we center on content (no one-sided dead margin)
  */
-function placeZoomCenter({ cx, cy, zoom, box }) {
+function placeZoomCenter({ cx, cy, zoom, box, lockX = false }) {
   const z = Math.max(1, Math.min(ZOOM_MAX, zoom));
   const winW = W / z;
   const winH = H / z;
@@ -498,16 +518,18 @@ function placeZoomCenter({ cx, cy, zoom, box }) {
     y: Math.max(winH / 2, Math.min(H - winH / 2, y)),
   });
 
-  // Guarantee the target stays inside the crop with breathing room, nudging the
-  // centre the minimum amount needed rather than recentring on the target.
+  // Keep the target inside the crop. When lockX is set we only adjust vertically
+  // — sideways drift is what made centered SaaS pages look shoved over.
   if (box && box.w > 0 && box.h > 0) {
     const pad = 64;
-    if (box.w + pad * 2 <= winW) {
-      const lo = box.x + box.w + pad - winW / 2;
-      const hi = box.x - pad + winW / 2;
-      if (lo <= hi) cx = Math.max(lo, Math.min(hi, cx));
-    } else {
-      cx = box.x + box.w / 2;
+    if (!lockX) {
+      if (box.w + pad * 2 <= winW) {
+        const lo = box.x + box.w + pad - winW / 2;
+        const hi = box.x - pad + winW / 2;
+        if (lo <= hi) cx = Math.max(lo, Math.min(hi, cx));
+      } else {
+        cx = box.x + box.w / 2;
+      }
     }
     if (box.h + pad * 2 <= winH) {
       const lo = box.y + box.h + pad - winH / 2;

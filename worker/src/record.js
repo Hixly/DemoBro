@@ -175,48 +175,27 @@ export async function measureContentBounds(page) {
 
       if (boxes.length < 2) return null;
 
-      // Full chrome union — logo/top-left and top-right nav must count, or the
-      // renderer treats those gutters as empty and crops them off, which makes
-      // a centered page look shoved to one side.
-      let chromeMinX = vw;
-      let chromeMaxX = 0;
-      let chromeMinY = vh;
-      let chromeMaxY = 0;
-      for (const b of boxes) {
-        chromeMinX = Math.min(chromeMinX, b.x);
-        chromeMaxX = Math.max(chromeMaxX, b.x + b.w);
-        chromeMinY = Math.min(chromeMinY, b.y);
-        chromeMaxY = Math.max(chromeMaxY, b.y + b.h);
+      // Ignore near-full-width strips (backgrounds, rules) — they inflate the
+      // bounds to the whole viewport and stop us framing the real app column.
+      const usable = boxes.filter((b) => b.w < vw * 0.85);
+
+      // Chrome = every usable control, including logo + right-side nav that
+      // clustering would drop as outliers from the form column.
+      let minX = vw;
+      let maxX = 0;
+      let minY = vh;
+      let maxY = 0;
+      for (const b of usable) {
+        minX = Math.min(minX, b.x);
+        maxX = Math.max(maxX, b.x + b.w);
+        minY = Math.min(minY, b.y);
+        maxY = Math.max(maxY, b.y + b.h);
       }
-
-      // Prefer the dense content column for vertical extent only.
-      boxes.sort((a, b) => a.area - b.area);
-      const keep = boxes.slice(0, Math.max(2, Math.ceil(boxes.length * 0.85)));
-      const centers = keep.map((b) => b.x + b.w / 2).sort((a, b) => a - b);
-      const mid = centers[Math.floor(centers.length / 2)];
-      const clustered = keep.filter((b) => {
-        const cx = b.x + b.w / 2;
-        return Math.abs(cx - mid) < vw * 0.28;
-      });
-      const use = clustered.length >= 2 ? clustered : keep;
-
-      let colMinY = vh;
-      let colMaxY = 0;
-      for (const b of use) {
-        colMinY = Math.min(colMinY, b.y);
-        colMaxY = Math.max(colMaxY, b.y + b.h);
-      }
-
-      // Horizontal: full chrome. Vertical: denser column, expanded to chrome.
-      const minX = chromeMinX;
-      const maxX = chromeMaxX;
-      const minY = Math.min(chromeMinY, colMinY);
-      const maxY = Math.max(chromeMaxY, colMaxY);
       const w = maxX - minX;
       const h = maxY - minY;
       if (w < vw * 0.1 || h < vh * 0.08) return null;
 
-      const padX = Math.min(40, Math.max(16, w * 0.03));
+      const padX = Math.min(48, Math.max(20, w * 0.04));
       const padY = Math.min(40, Math.max(16, h * 0.04));
       const x = Math.max(0, minX - padX);
       const y = Math.max(0, minY - padY);
