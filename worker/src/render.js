@@ -245,14 +245,14 @@ const ZOOM_EASE_SEC = 0.28;
  * therefore stay essentially full-frame and actions punch only enough to draw
  * the eye to the target.
  */
-const ZOOM_MAX = 1.85;
+const ZOOM_MAX = 2.35;
 /**
  * Fill-zoom ceilings. Centered app columns (e.g. max-width hero on a 1920
  * canvas) leave huge empty side gutters — we zoom just enough to put the real
- * UI edge-to-edge, never past the measured chrome.
+ * UI edge-to-edge, with a little crop into chrome if the form is inset.
  */
-const PAUSE_ZOOM_MAX = 1.7;
-const ACTION_ZOOM_MAX = 1.85;
+const PAUSE_ZOOM_MAX = 2.05;
+const ACTION_ZOOM_MAX = 2.35;
 const PAUSE_ZOOM_MIN = 1.04;
 /** Breathing room kept around an action target, in source pixels. */
 const ZOOM_PAD_PX = 160;
@@ -439,21 +439,29 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
   const isAction = stepKind === "click" || stepKind === "type";
   const kindCeiling = isAction ? ACTION_ZOOM_MAX : PAUSE_ZOOM_MAX;
 
-  // Slack = empty margin outside measured chrome. Zooming further than
-  // safeZoom crops real UI (logo / nav) and the shot stops looking centered.
+  // Slack = empty margin outside measured chrome. Allow a little crop into
+  // chrome so inset forms (narrower than the header) can still fill the shot.
   const slackX = Math.max(0, Math.min(content.x, W - (content.x + content.w)));
   const slackY = Math.max(0, Math.min(content.y, H - (content.y + content.h)));
-  const safeZoomX = Math.max(1, W / Math.max(W - 2 * slackX, 1));
-  const safeZoomY = Math.max(1, H / Math.max(H - 2 * slackY, 1));
+  const cropIntoX = Math.min(56, slackX * 0.12);
+  const cropIntoY = Math.min(40, slackY * 0.12);
+  const safeZoomX = Math.max(
+    1,
+    W / Math.max(content.w - 2 * cropIntoX, content.w * 0.9, 1),
+  );
+  const safeZoomY = Math.max(
+    1,
+    H / Math.max(content.h - 2 * cropIntoY, content.h * 0.9, 1),
+  );
 
   // Fill zoom: put the app column edge-to-edge when the page is a narrow
   // centered card on a wide canvas (the common SaaS landing layout). A
   // full-height column still has empty side gutters — don't let fillY (≈1)
   // suppress the horizontal fill.
   const narrowX = content.w < W * 0.82;
-  const narrowY = content.h < H * 0.72;
-  const fillX = W / Math.max(content.w * 1.06, 1);
-  const fillY = H / Math.max(content.h * 1.08, 1);
+  const narrowY = content.h < H * 0.78;
+  const fillX = W / Math.max(content.w * 1.02, 1);
+  const fillY = H / Math.max(content.h * 1.06, 1);
   let fillZoom = 1;
   if (narrowX && narrowY) fillZoom = Math.min(fillX, fillY);
   else if (narrowX) fillZoom = fillX;
@@ -479,18 +487,23 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
     );
     if (Number.isFinite(need) && need > 1) {
       // Don't let a tiny target drag us past a balanced fill of the page.
-      zoomPeak = Math.max(zoomPeak, Math.min(need, fillZoom * 1.08));
+      zoomPeak = Math.max(zoomPeak, Math.min(need, fillZoom * 1.12));
     }
   }
 
   zoomPeak = Math.min(ZOOM_MAX, kindCeiling, safeZoom, zoomPeak);
 
-  // Lock horizontally to the page centre — never drift toward a target. Vertical
-  // may follow the action so low CTAs stay on screen.
+  // Lock horizontally to the page centre — never drift toward a target.
   const cx = W / 2;
   let cy = content.y + content.h / 2;
   if (isAction && box && box.w > 0 && box.h > 0) {
     cy = box.y + box.h / 2;
+  }
+  // Full-bleed-tall columns: pin the crop to the top so the header/logo stay
+  // on screen instead of being shaved equally with the footer.
+  if (content.y <= 24 && content.h >= H * 0.7) {
+    const winH = H / Math.max(zoomPeak, 1);
+    cy = Math.min(cy, content.y + winH / 2);
   }
 
   const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box, lockX: true });

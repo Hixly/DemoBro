@@ -178,14 +178,30 @@ export async function measureContentBounds(page) {
       // Ignore near-full-width strips (backgrounds, rules) — they inflate the
       // bounds to the whole viewport and stop us framing the real app column.
       const usable = boxes.filter((b) => b.w < vw * 0.85);
+      if (usable.length < 2) return null;
 
-      // Chrome = every usable control, including logo + right-side nav that
+      // Drop orphan footer cards ("Coming soon", newsletter) that sit below a
+      // clear gap — they stretch height to the full viewport and force every
+      // zoom to crop the real header.
+      const byTop = [...usable].sort((a, b) => a.y - b.y);
+      let cutY = vh;
+      for (let i = 1; i < byTop.length; i += 1) {
+        const prevBottom = byTop[i - 1].y + byTop[i - 1].h;
+        const gap = byTop[i].y - prevBottom;
+        if (gap > vh * 0.08 && byTop[i].y > vh * 0.62) {
+          cutY = byTop[i].y;
+          break;
+        }
+      }
+      const primary = usable.filter((b) => b.y < cutY);
+
+      // Chrome = every primary control, including logo + right-side nav that
       // clustering would drop as outliers from the form column.
       let minX = vw;
       let maxX = 0;
       let minY = vh;
       let maxY = 0;
-      for (const b of usable) {
+      for (const b of primary) {
         minX = Math.min(minX, b.x);
         maxX = Math.max(maxX, b.x + b.w);
         minY = Math.min(minY, b.y);
