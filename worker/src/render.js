@@ -245,17 +245,17 @@ const ZOOM_EASE_SEC = 0.28;
  * therefore stay essentially full-frame and actions punch only enough to draw
  * the eye to the target.
  */
-const ZOOM_MAX = 1.2;
-const PAUSE_ZOOM_MAX = 1.06;
-const ACTION_ZOOM_MAX = 1.2;
+const ZOOM_MAX = 1.1;
+const PAUSE_ZOOM_MAX = 1.05;
+const ACTION_ZOOM_MAX = 1.1;
 /**
  * Landing beats still need to breathe. The zoom eases from and back to 1.0, so
  * a small peak reads as a gentle settle and the beat opens and closes on the
  * uncropped page.
  */
-const PAUSE_ZOOM_MIN = 1.04;
+const PAUSE_ZOOM_MIN = 1.03;
 /** Breathing room kept around an action target, in source pixels. */
-const ZOOM_PAD_PX = 140;
+const ZOOM_PAD_PX = 180;
 const SPOTLIGHT_PAD = 48;
 
 function normalizeContentBounds(raw) {
@@ -437,46 +437,42 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
     normalizeContentBounds(contentBounds) || { x: 0, y: 0, w: W, h: H };
 
   const isAction = stepKind === "click" || stepKind === "type";
-  const ceiling = isAction ? ACTION_ZOOM_MAX : PAUSE_ZOOM_MAX;
+  const kindCeiling = isAction ? ACTION_ZOOM_MAX : PAUSE_ZOOM_MAX;
 
-  // Only crop into margins we can prove are empty. Cropping symmetrically by
-  // the smaller margin keeps the measured content whole; going further starts
-  // eating the page itself.
+  // safeZoom is a CEILING: only crop into margins we can prove are empty.
+  // Using it as a floor (the old bug) let action beats punch to 1.2x even when
+  // that sliced off the logo while keeping the right-side nav — looking like
+  // the whole page had been shoved sideways.
   const slackX = Math.max(0, Math.min(content.x, W - (content.x + content.w)));
   const slackY = Math.max(0, Math.min(content.y, H - (content.y + content.h)));
   const safeZoom = Math.max(
     1,
     Math.min(W / Math.max(W - 2 * slackX, 1), H / Math.max(H - 2 * slackY, 1)),
   );
+  const ceiling = Math.min(kindCeiling, safeZoom);
 
-  let zoomPeak = 1;
+  let zoomPeak = isAction ? 1 : PAUSE_ZOOM_MIN;
   if (isAction && box && Number.isFinite(box.x) && box.w > 0 && box.h > 0) {
-    // Enough for the target to read clearly — not enough to fill the frame
-    // with it, which is what used to crop the layout away.
+    // Gentle enough that the target reads; never enough to fill the frame.
     const need = Math.min(
       W / Math.max(box.w + ZOOM_PAD_PX * 2, 1),
       H / Math.max(box.h + ZOOM_PAD_PX * 2, 1),
     );
-    if (Number.isFinite(need)) zoomPeak = Math.max(1, need);
-  }
-  zoomPeak = Math.min(
-    ceiling,
-    Math.max(zoomPeak, safeZoom, isAction ? 1 : PAUSE_ZOOM_MIN),
-  );
-
-  // Centred layouts are overwhelmingly the norm, so anchor to the page centre
-  // and let the target pull the frame only when it truly sits off to one side.
-  let cx = W / 2;
-  let cy = content.y + content.h / 2;
-  if (isAction && box && box.w > 0 && box.h > 0) {
-    const tCx = box.x + box.w / 2;
-    cy = box.y + box.h / 2;
-    if (Math.abs(tCx - W / 2) > W * 0.2) {
-      cx = tCx * 0.55 + (W / 2) * 0.45;
+    if (Number.isFinite(need) && need > 1) {
+      zoomPeak = Math.min(ceiling, Math.max(1, need));
     }
   }
+  zoomPeak = Math.min(ceiling, Math.max(zoomPeak, isAction ? 1 : PAUSE_ZOOM_MIN));
 
-  // Finalize crop center for this peak zoom.
+  // Always anchor to the page centre. Side-pulling the crop is what made
+  // balanced sites look off-centre once header chrome was in frame.
+  const cx = W / 2;
+  let cy = H / 2;
+  if (isAction && box && box.w > 0 && box.h > 0) {
+    // Vertical only — keep the action in view without shifting sideways.
+    cy = box.y + box.h / 2;
+  }
+
   const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box });
   return {
     zoomPeak: placed.zoom,
