@@ -1,10 +1,14 @@
+# Match the ffmpeg used in local dev. Jammy only packages 4.4, which predates
+# the -fps_mode flag the render pipeline relies on and differs in filter
+# behaviour, so renders that work locally would fail here.
+FROM mwader/static-ffmpeg:8.1.2 AS ffmpeg
+
 # Official Playwright image — Chromium + system deps included.
 FROM mcr.microsoft.com/playwright:v1.51.0-jammy
 
 USER root
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
-  && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 
 WORKDIR /app
 
