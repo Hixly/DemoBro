@@ -182,7 +182,13 @@ const SECTION_HEADING =
   /^(clone|install|installing|installation|getting[ -]started|get[ -]started|set[ -]?up|setup|usage|how[ -]to|quick[ -]?start|introduction|intro|overview|about|features|prerequisites|requirements|contributing|contribution|license|licence|changelog|roadmap|documentation|docs|deploy|deployment|running|run|build|building|test|testing|development|env|configuration|config|todo|credits|acknowledgements|table of contents|contents)\b/i;
 
 function readmeTitle(readme: string): string | null {
-  const match = readme.match(/^#\s+(.+)$/m);
+  // Shell comments inside fenced examples ("# Clone the repository", "# or")
+  // are indistinguishable from an H1 by regex and are the most common source of
+  // a nonsense project title, so drop fenced blocks before looking.
+  const prose = readme
+    .replace(/^ {0,3}```[\s\S]*?^ {0,3}```/gm, "")
+    .replace(/^ {0,3}~~~[\s\S]*?^ {0,3}~~~/gm, "");
+  const match = prose.match(/^#\s+(.+)$/m);
   if (!match) return null;
   const heading = match[1]
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")

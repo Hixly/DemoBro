@@ -670,8 +670,14 @@ function captionCopyForSeg(seg) {
 async function prepareCaptionPng(seg, outPath) {
   const short = captionCopyForSeg(seg);
   if (!short) return null;
-  await renderCardPng(outPath, "caption", { text: short }, null);
-  console.log(`[render] caption="${short}" lower-third png`);
+  // A fixed lower third lands straight on the primary CTA of any page whose
+  // action sits low, hiding the thing the beat exists to show. Put the caption
+  // on the opposite side of the frame from the target.
+  const box = seg.box;
+  const targetLow = box && box.y + box.h / 2 > H * 0.58;
+  const position = targetLow ? "top" : "bottom";
+  await renderCardPng(outPath, "caption", { text: short, position }, null);
+  console.log(`[render] caption="${short}" ${position} third png`);
   return short;
 }
 

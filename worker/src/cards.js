@@ -92,7 +92,8 @@ function titleCardHtml({ title, description, liveUrl, badges }) {
  * Full-frame transparent lower-third caption: one dark pill, white Inter type.
  * Bar is pinned to a fixed Y so every beat lands in the same spot.
  */
-function captionCardHtml({ text, fontUrl }) {
+function captionCardHtml({ text, fontUrl, position = "bottom" }) {
+  const anchor = position === "top" ? "top: 80px;" : "bottom: 80px;";
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -118,7 +119,7 @@ function captionCardHtml({ text, fontUrl }) {
     .caption {
       position: absolute;
       left: 50%;
-      bottom: 80px;
+      ${anchor}
       transform: translateX(-50%);
       max-width: 1600px;
       padding: 18px 44px;
@@ -217,6 +218,7 @@ export async function renderCardPng(outPath, kind, data, logoPath) {
     html = captionCardHtml({
       text: String(data?.text ?? "").trim(),
       fontUrl,
+      position: data?.position === "top" ? "top" : "bottom",
     });
   } else {
     const bytes = await readFile(logoPath);
