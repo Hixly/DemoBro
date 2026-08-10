@@ -108,16 +108,42 @@ export async function enumerateElements(page) {
       return style.visibility !== "hidden" && style.display !== "none";
     };
 
+    // Inputs are usually labelled only by placeholder, and rich-text composers
+    // are contenteditable divs with no value/placeholder attribute at all.
+    const NON_TEXT_INPUT = new Set([
+      "checkbox", "radio", "range", "color", "file", "hidden",
+      "submit", "reset", "button", "image",
+    ]);
+    const isEditable = (el) => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "textarea") return true;
+      if (tag === "input") {
+        return !NON_TEXT_INPUT.has((el.getAttribute("type") || "text").toLowerCase());
+      }
+      if (el.isContentEditable) return true;
+      return (el.getAttribute("role") || "") === "textbox";
+    };
+    const placeholderFor = (el) =>
+      clean(
+        el.getAttribute("placeholder") ||
+          el.getAttribute("data-placeholder") ||
+          el.getAttribute("aria-placeholder") ||
+          "",
+      );
+
     const out = [];
     const seen = new Set();
     const push = (el, role) => {
       if (out.length >= 120) return;
       const ariaLabel = clean(el.getAttribute("aria-label") || "");
-      const name = accessibleName(el);
+      const editable = isEditable(el);
+      const placeholder = placeholderFor(el);
+      // An empty composer has no text content, so fall back to its placeholder.
+      const name = accessibleName(el) || placeholder;
       const testId = el.getAttribute("data-testid") || "";
       const id = el.id || "";
       const href = el.getAttribute("href") || "";
-      const key = `${el.tagName}|${name}|${testId}|${id}|${href}`;
+      const key = `${el.tagName}|${name}|${testId}|${id}|${href}|${placeholder}`;
       if (seen.has(key)) return;
       seen.add(key);
       const disabled =
@@ -129,6 +155,10 @@ export async function enumerateElements(page) {
         role: role || el.getAttribute("role") || "",
         name,
         ariaLabel,
+        placeholder,
+        editable,
+        contentEditable: el.isContentEditable === true,
+        inputType: (el.getAttribute("type") || "").toLowerCase(),
         testId,
         id,
         href,
@@ -139,7 +169,8 @@ export async function enumerateElements(page) {
 
     document
       .querySelectorAll(
-        "a[href], button, [role='button'], input, select, textarea, summary",
+        "a[href], button, [role='button'], input, select, textarea, summary," +
+          " [contenteditable=''], [contenteditable='true'], [role='textbox']",
       )
       .forEach((el) => {
         const type = (el.getAttribute("type") || "").toLowerCase();
@@ -183,12 +214,34 @@ export function selectorFor(el) {
   if (aria) {
     return `${el.tag}[aria-label="${escapeAttr(aria.slice(0, 80))}"]`;
   }
+
+  // Text fields are usually labelled by placeholder, which is an attribute and
+  // not text content — :has-text() can never match an empty field. Prefix-match
+  // because the stored name is truncated for captions.
+  if (el.editable && el.placeholder) {
+    const stem = escapeAttr(el.placeholder.slice(0, 40));
+    const attr = el.contentEditable ? "data-placeholder" : "placeholder";
+    return `${el.tag}[${attr}^="${stem}"]`;
+  }
+  if (el.contentEditable) {
+    return `${el.tag}[contenteditable]`;
+  }
+
+  // Same trap for value-bearing fields with no placeholder: their name comes
+  // from an attribute, so narrow by type rather than by text content.
+  if (el.editable) {
+    return el.inputType ? `${el.tag}[type="${el.inputType}"]` : el.tag;
+  }
   if (name) {
     const short = escapeAttr(name.slice(0, 40));
     return `${el.tag}:has-text("${short}")`;
   }
   return el.tag;
 }
+
+const TEXT_ENTRY_TAGS = new Set(["input", "textarea"]);
+/** Same verbs record.js uses to decide a step is a "type" action. */
+const TYPE_INTENT_RE = /\b(type|enter|fill|write|paste|search)\b/i;
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "to", "on", "in", "of", "for", "and", "or", "your", "you",
@@ -215,11 +268,19 @@ function scoreMatch(step, el) {
   if (stepTokens.size === 0) return 0;
   const elName = String(el.name || "").toLowerCase();
   const elTokens = tokens(el.name);
-  if (elTokens.length === 0) return 0;
 
   // Hard preference: Copy steps must match Copy*; don't steal Generate Email.
   if (/\bcopy\b/.test(desc) && !/\bcopy\b/.test(elName)) return 0;
   if (/\bgenerat/.test(desc) && !/\bgenerat/.test(elName)) return 0;
+
+  // A "type the prompt" step wants the composer, and composers are frequently
+  // unlabelled or labelled with prose that shares no tokens with the step.
+  const typeIntent = TYPE_INTENT_RE.test(desc);
+  if (typeIntent && el.editable) return 0.75;
+  // Conversely, a typing step must never land on a button.
+  if (typeIntent && !el.editable && /^(button|a|summary)$/.test(el.tag)) return 0;
+
+  if (elTokens.length === 0) return 0;
 
   let hits = 0;
   for (const t of elTokens) if (stepTokens.has(t)) hits += 1;
@@ -253,6 +314,17 @@ async function probeSelector(page, selector) {
     const text = hasText[2];
     const ariaSel = `${tag}[aria-label="${escapeAttr(text)}"]`;
     if (await probeLocator(page.locator(ariaSel).first())) return ariaSel;
+
+    // Planners routinely emit textarea:has-text("<placeholder>"). Placeholders
+    // are attributes, so recover by matching the attribute instead.
+    if (TEXT_ENTRY_TAGS.has(tag.toLowerCase())) {
+      for (const attr of ["placeholder", "data-placeholder", "aria-placeholder"]) {
+        const sel = `${tag}[${attr}^="${escapeAttr(text)}"]`;
+        if (await probeLocator(page.locator(sel).first())) return sel;
+      }
+      if (await probeLocator(page.locator(tag).first())) return tag;
+    }
+
     const role = tag === "a" ? "link" : "button";
     try {
       const byRole = page.getByRole(role, { name: text }).first();
@@ -331,7 +403,7 @@ export async function resolveStep(page, step, opts = {}) {
   // Keep disabled controls as candidates (Generate enables after fill), but
   // prefer enabled matches when scores tie. Skip anything already claimed.
   const ranked = elements
-    .filter((el) => el.visible && el.name)
+    .filter((el) => el.visible && (el.name || el.editable))
     .map((el) => ({ el, score: scoreMatch(step, el) }))
     .filter((c) => c.score >= 0.34)
     .sort(
