@@ -34,6 +34,8 @@ let lastSweepAt = 0;
 async function failJob(jobId, err, videoDir) {
   const message = toUserFacingError(err);
   console.error(`[worker] job ${jobId} failed:`, message);
+  // The user-facing copy is deliberately vague; keep the real cause in the logs.
+  console.error(`[worker] job ${jobId} cause:`, err instanceof Error ? err.stack || err.message : err);
   await markJobStatus(jobId, "failed", "failed", {
     error_message: message.slice(0, 500),
     expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
