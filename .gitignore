@@ -44,11 +44,13 @@ next-env.d.ts
 # brainstorm companion
 .superpowers/
 
+# local design-tool output
+.hallmark/
+
 # worker recordings (raw Playwright video)
 worker/output/
 worker/node_modules/
 
 **/node_modules/
-worker/output/
 *.mp4
 *.webm
