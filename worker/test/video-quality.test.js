@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assessRenderedVideo,
+  chooseBodyPlaybackSpeed,
   dedupeVisualSegments,
   normalizedFrameDifference,
+  planRenderedBodyRepair,
   selectMeaningfulEnding,
 } from "../src/video-quality.js";
 
@@ -102,6 +104,41 @@ test("final media inspection accepts a healthy DemoBro render", () => {
     minBodySegments: 3,
   });
   assert.equal(result.ok, true);
+});
+
+test("near-floor body footage receives subtle render headroom", () => {
+  const speed = chooseBodyPlaybackSpeed({
+    contentDurationSec: 12.3,
+    currentSpeed: 1,
+    minBodySegments: 3,
+  });
+  assert.equal(Number(speed.toFixed(3)), 0.946);
+  assert.equal(
+    chooseBodyPlaybackSpeed({
+      contentDurationSec: 14,
+      currentSpeed: 1,
+      minBodySegments: 3,
+    }),
+    1,
+  );
+});
+
+test("small encoded body shortfalls are repaired with safety headroom", () => {
+  const repair = planRenderedBodyRepair({
+    bodyDurationSec: 11.64,
+    minBodySegments: 3,
+  });
+  assert.equal(repair.needed, true);
+  assert.equal(Number(repair.extensionSec.toFixed(2)), 0.41);
+  assert.equal(Number(repair.targetSec.toFixed(2)), 12.05);
+});
+
+test("large body shortfalls still fail instead of being hidden", () => {
+  const repair = planRenderedBodyRepair({
+    bodyDurationSec: 9.5,
+    minBodySegments: 3,
+  });
+  assert.equal(repair.needed, false);
 });
 
 test("final media inspection blocks technically incomplete output", () => {

@@ -15,7 +15,11 @@ import {
 import { executeStep } from "./record.js";
 import { ingestRepoLight } from "./generate-storyboard.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
-import { assessTourQuality, MIN_SUCCESSFUL_BEATS } from "./tour-quality.js";
+import {
+  assessTourQuality,
+  MIN_SUCCESSFUL_BEATS,
+  TARGET_BODY_DURATION_MS,
+} from "./tour-quality.js";
 import {
   GROK_MAX_ATTEMPTS,
   GROK_TIMEOUT_MS,
@@ -1698,10 +1702,13 @@ export async function recordAgentTour(options) {
       quality.successfulBeats >= MIN_SUCCESSFUL_BEATS &&
       quality.interactions > 0 &&
       quality.distinctStates >= 2 &&
-      quality.bodyDurationMs < 12_000
+      quality.bodyDurationMs < TARGET_BODY_DURATION_MS
     ) {
-      const holdMs = Math.min(6_000, 12_000 - quality.bodyDurationMs + 250);
-      console.log(`[agent] holding final state ${holdMs}ms for body-duration floor`);
+      const holdMs = Math.min(
+        6_000,
+        TARGET_BODY_DURATION_MS - quality.bodyDurationMs + 250,
+      );
+      console.log(`[agent] holding final state ${holdMs}ms for render headroom`);
       await sleep(holdMs);
       const last = [...reports].reverse().find((r) => r.status === "succeeded");
       if (last) last.endMs += holdMs;

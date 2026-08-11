@@ -15,3 +15,12 @@ test("tour quality failures hide internal metrics and explain the next step", ()
   );
   assert.doesNotMatch(message, /beats|12s|visual states/i);
 });
+
+test("render quality failures do not encourage deterministic retries", () => {
+  const message = toUserFacingError(
+    new Error("Rendered video quality check failed: needs 11.8s rendered body footage."),
+  );
+  assert.match(message, /captured your project/i);
+  assert.match(message, /run reference/i);
+  assert.doesNotMatch(message, /please try again/i);
+});

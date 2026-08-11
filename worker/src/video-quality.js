@@ -1,5 +1,50 @@
 export const VISUAL_DUPLICATE_THRESHOLD = 0.018;
 export const MIN_RENDERED_BODY_SECONDS = 11.8;
+export const TARGET_RENDERED_BODY_SECONDS = 13;
+export const MIN_BODY_PLAYBACK_SPEED = 0.9;
+export const MAX_AUTOMATIC_BODY_REPAIR_SECONDS = 1.25;
+export const BODY_REPAIR_HEADROOM_SECONDS = 0.25;
+
+export function chooseBodyPlaybackSpeed({
+  contentDurationSec,
+  currentSpeed = 1,
+  minBodySegments = 0,
+}) {
+  const content = Number(contentDurationSec);
+  const speed = Number(currentSpeed);
+  if (
+    !minBodySegments ||
+    !Number.isFinite(content) ||
+    content <= 0 ||
+    !Number.isFinite(speed) ||
+    speed <= 0 ||
+    content / speed >= TARGET_RENDERED_BODY_SECONDS
+  ) {
+    return speed;
+  }
+  return Math.max(
+    MIN_BODY_PLAYBACK_SPEED,
+    Math.min(speed, content / TARGET_RENDERED_BODY_SECONDS),
+  );
+}
+
+export function planRenderedBodyRepair({ bodyDurationSec, minBodySegments = 0 }) {
+  const body = Number(bodyDurationSec);
+  if (
+    !minBodySegments ||
+    !Number.isFinite(body) ||
+    body >= MIN_RENDERED_BODY_SECONDS
+  ) {
+    return { needed: false, extensionSec: 0, targetSec: body };
+  }
+
+  const targetSec = MIN_RENDERED_BODY_SECONDS + BODY_REPAIR_HEADROOM_SECONDS;
+  const extensionSec = targetSec - body;
+  if (extensionSec > MAX_AUTOMATIC_BODY_REPAIR_SECONDS) {
+    return { needed: false, extensionSec: 0, targetSec };
+  }
+  return { needed: true, extensionSec, targetSec };
+}
 
 function durationOf(segment) {
   return Math.max(0, Number(segment?.end || 0) - Number(segment?.start || 0));

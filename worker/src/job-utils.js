@@ -252,7 +252,7 @@ export function toUserFacingError(err) {
     return "We opened your project but couldn't capture a complete interactive demo. Nothing was published. Please try again, or send us this run so we can investigate.";
   }
   if (/rendered video quality check failed/i.test(msg)) {
-    return "The finished video did not pass DemoBro's quality check. Please try again.";
+    return "DemoBro captured your project, but the final render couldn't be completed safely. Nothing was published. Send us this run reference so we can investigate; repeating the same run may not help.";
   }
   // Keep short; never dump stacks / HTML.
   const clipped = msg.slice(0, 180);

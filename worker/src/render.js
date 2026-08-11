@@ -8,7 +8,9 @@ import { RENDER_TIMEOUT_MS } from "./job-utils.js";
 import {
   MIN_RENDERED_BODY_SECONDS,
   assessRenderedVideo,
+  chooseBodyPlaybackSpeed,
   dedupeVisualSegments,
+  planRenderedBodyRepair,
   selectMeaningfulEnding,
 } from "./video-quality.js";
 
@@ -1366,6 +1368,17 @@ export async function renderDemo(opts) {
       speed = contentSecs / budget;
       speed = Math.min(2.0, Math.max(1, speed));
     }
+    const headroomSpeed = chooseBodyPlaybackSpeed({
+      contentDurationSec: contentSecs,
+      currentSpeed: speed,
+      minBodySegments: opts.minBodySegments,
+    });
+    if (headroomSpeed < speed) {
+      console.log(
+        `[render] body headroom ${contentSecs.toFixed(2)}s @ ${headroomSpeed.toFixed(3)}x`,
+      );
+      speed = headroomSpeed;
+    }
 
     console.log(
       `[render] source=${sourceFps.toFixed(2)}fps interpolate=false speed=${speed.toFixed(2)}`,
@@ -1471,7 +1484,38 @@ export async function renderDemo(opts) {
         1,
       );
     }
-    const bodyDurationSec = await probeDuration(bodyPath);
+    let bodyDurationSec = await probeDuration(bodyPath);
+    const repair = planRenderedBodyRepair({
+      bodyDurationSec,
+      minBodySegments: opts.minBodySegments,
+    });
+    if (repair.needed && lastRendered) {
+      const currentClipDuration = await probeDuration(lastRendered.clip);
+      const sourceDuration = Math.max(
+        0.2,
+        lastRendered.segment.end - lastRendered.segment.start,
+      );
+      const repairSpeed = Math.max(
+        0.75,
+        Math.min(
+          speed,
+          sourceDuration / (currentClipDuration + repair.extensionSec),
+        ),
+      );
+      console.log(
+        `[quality] repairing ${repair.extensionSec.toFixed(2)}s body shortfall ` +
+          `on final beat @ ${repairSpeed.toFixed(3)}x`,
+      );
+      await extractSegment(
+        opts.rawVideoPath,
+        { ...lastRendered.segment, transitionToOutro: true },
+        lastRendered.clip,
+        repairSpeed,
+      );
+      await concatCuts(clipPaths, bodyPath);
+      bodyDurationSec = await probeDuration(bodyPath);
+      console.log(`[quality] repaired body=${bodyDurationSec.toFixed(2)}s`);
+    }
 
     await mkdir(path.dirname(opts.outputPath), { recursive: true });
     // Soft xfade title→body. The last beat has already faded to the outro's

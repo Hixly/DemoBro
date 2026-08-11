@@ -1,5 +1,6 @@
 export const MIN_SUCCESSFUL_BEATS = 3;
 export const MIN_BODY_DURATION_MS = 12_000;
+export const TARGET_BODY_DURATION_MS = 13_000;
 export const MIN_DISTINCT_STATES = 2;
 
 const RENDERED_BEAT_LIMIT_MS = {
