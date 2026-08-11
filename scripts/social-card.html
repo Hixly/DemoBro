@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1200, initial-scale=1" />
+    <title>DemoBro social card</title>
+    <style>
+      @font-face {
+        font-family: "Fredoka";
+        src: url("../worker/assets/fonts/Fredoka-SemiBold.ttf") format("truetype");
+        font-weight: 600;
+      }
+
+      @font-face {
+        font-family: "Inter";
+        src: url("../worker/assets/fonts/Inter-Regular.ttf") format("truetype");
+        font-weight: 400;
+      }
+
+      :root {
+        --paper: #faf9f6;
+        --ink: #111111;
+        --blue: #2bacfc;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1200px;
+        height: 630px;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        position: relative;
+        background: var(--paper)
+          url("assets/demobro-social-bg.png") center / cover no-repeat;
+        color: var(--ink);
+        font-family: "Inter", sans-serif;
+      }
+
+      .copy {
+        position: absolute;
+        top: 58px;
+        left: 72px;
+        width: 570px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: max-content;
+        transform: rotate(-2deg);
+        transform-origin: left center;
+      }
+
+      .brand img {
+        width: 58px;
+        height: 58px;
+        object-fit: contain;
+      }
+
+      .brand-name {
+        font-family: "Fredoka", sans-serif;
+        font-size: 50px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -2px;
+      }
+
+      .brand-name span {
+        color: var(--blue);
+      }
+
+      .eyebrow {
+        display: inline-block;
+        margin: 42px 0 19px 3px;
+        padding: 8px 13px 7px;
+        border: 3px solid var(--ink);
+        border-radius: 10px;
+        background: var(--paper);
+        box-shadow: 5px 5px 0 var(--blue);
+        font-family: "Fredoka", sans-serif;
+        font-size: 16px;
+        line-height: 1;
+        letter-spacing: 1.4px;
+        transform: rotate(-1.5deg);
+      }
+
+      h1 {
+        max-width: 570px;
+        margin: 0;
+        font-family: "Fredoka", sans-serif;
+        font-size: 72px;
+        font-weight: 600;
+        line-height: 0.96;
+        letter-spacing: -2.5px;
+      }
+
+      h1 span {
+        position: relative;
+        display: inline-block;
+        color: var(--blue);
+      }
+
+      h1 span::after {
+        position: absolute;
+        right: 2px;
+        bottom: -8px;
+        left: 2px;
+        height: 7px;
+        border-radius: 999px 55% 999px 42%;
+        background: var(--blue);
+        content: "";
+        transform: rotate(-1deg);
+      }
+
+      .subhead {
+        width: 515px;
+        margin: 24px 0 0 3px;
+        color: rgba(17, 17, 17, 0.7);
+        font-size: 21px;
+        line-height: 1.38;
+      }
+
+      .domain {
+        position: absolute;
+        bottom: 46px;
+        left: 76px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: "Fredoka", sans-serif;
+        font-size: 20px;
+        letter-spacing: 0.2px;
+      }
+
+      .domain::before {
+        width: 12px;
+        height: 12px;
+        border: 3px solid var(--ink);
+        border-radius: 50%;
+        background: var(--blue);
+        content: "";
+      }
+    </style>
+  </head>
+  <body>
+    <main class="copy">
+      <div class="brand">
+        <img src="../public/brand/demobro-logo.png" alt="" />
+        <div class="brand-name">Demo<span>Bro</span></div>
+      </div>
+
+      <div class="eyebrow">MICRO-DEMO MAKER</div>
+      <h1>Drop your links.<br /><span>We film the tour.</span></h1>
+      <p class="subhead">
+        A polished product demo from your live app—no screen recording required.
+      </p>
+    </main>
+
+    <div class="domain">demobro.video</div>
+  </body>
+</html>
