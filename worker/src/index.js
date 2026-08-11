@@ -11,6 +11,7 @@ import {
   markJobReady,
   markJobStatus,
   reapStaleJobs,
+  uploadDiagnosticBundle,
   uploadFinishedMp4,
 } from "./upload.js";
 import {
@@ -35,15 +36,45 @@ let lastSweepAt = 0;
 
 async function failJob(jobId, err, videoDir) {
   const message = toUserFacingError(err);
+  const diagnosticDir =
+    (err && typeof err === "object" && err.videoDir) || videoDir || null;
+  const tracePath =
+    (err && typeof err === "object" && err.tracePath) ||
+    (diagnosticDir ? path.join(diagnosticDir, "trace.zip") : null);
   console.error(`[worker] job ${jobId} failed:`, message);
   // The user-facing copy is deliberately vague; keep the real cause in the logs.
   console.error(`[worker] job ${jobId} cause:`, err instanceof Error ? err.stack || err.message : err);
+  if (diagnosticDir) {
+    await uploadDiagnosticBundle({
+      jobId,
+      files: [tracePath],
+      manifest: {
+        jobId,
+        outcome: "failed",
+        capturedAt: new Date().toISOString(),
+        userMessage: message,
+        cause: err instanceof Error ? err.message : String(err || "unknown"),
+        details:
+          err && typeof err === "object" ? err.diagnosticDetails || null : null,
+      },
+    })
+      .then((result) =>
+        console.log(
+          `[diagnostics] saved ${result.paths.length} private artifact(s) for ${jobId}`,
+        ),
+      )
+      .catch((uploadError) =>
+        console.warn(
+          `[diagnostics] upload soft-failed: ${uploadError instanceof Error ? uploadError.message : uploadError}`,
+        ),
+      );
+  }
   await markJobStatus(jobId, "failed", "failed", {
     error_message: message.slice(0, 500),
     expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
   }).catch(() => {});
-  if (videoDir) {
-    await rm(videoDir, { recursive: true, force: true }).catch(() => {});
+  if (diagnosticDir) {
+    await rm(diagnosticDir, { recursive: true, force: true }).catch(() => {});
   }
   const finishedPath = path.join(OUTPUT, "final", `${jobId}.mp4`);
   await rm(finishedPath, { force: true }).catch(() => {});
@@ -93,16 +124,25 @@ async function processJob(job) {
               ` states=${quality.distinctStates} body=${(quality.bodyDurationMs / 1000).toFixed(1)}s`,
           );
           if (!quality.ok) {
-            throw new Error(
+            const err = new Error(
               `Tour quality check failed: ${quality.reasons.join("; ")}.`,
             );
+            err.videoDir = recordResult.videoDir;
+            err.tracePath = recordResult.tracePath;
+            err.diagnosticDetails = {
+              quality,
+              pages: recordResult.pagePlans,
+              resolution: recordResult.resolution,
+              steps: recordResult.steps,
+            };
+            throw err;
           }
         }
 
         await markJobStatus(job.id, "rendering", "cutting_video");
 
         const finishedPath = path.join(OUTPUT, "final", `${job.id}.mp4`);
-        await renderDemo({
+        const renderResult = await renderDemo({
           rawVideoPath: recordResult.videoPath,
           timeline: recordResult.timeline,
           title: recordResult.title || job.title || "Untitled project",
@@ -114,6 +154,45 @@ async function processJob(job) {
           minBodySegments: mode === "agent" ? 3 : 0,
         });
         if (!alive) return;
+
+        if (renderResult.visualReview?.lowConfidence) {
+          await uploadDiagnosticBundle({
+            jobId: job.id,
+            files: [recordResult.tracePath],
+            manifest: {
+              jobId: job.id,
+              outcome: "low-confidence",
+              capturedAt: new Date().toISOString(),
+              liveUrl: job.live_url,
+              review: renderResult.visualReview,
+              render: {
+                durationSec: renderResult.durationSec,
+                bodyDurationSec: renderResult.bodyDurationSec,
+                plannedSegments: renderResult.plannedSegments,
+                renderedSegments: renderResult.renderedSegments,
+                failedSegments: renderResult.failedSegments,
+                storyDrops: renderResult.storyDrops,
+                removedDuplicates: renderResult.removedDuplicates,
+                endingChanges: renderResult.endingChanges,
+              },
+              tour: {
+                pages: recordResult.pagePlans,
+                resolution: recordResult.resolution,
+                steps: recordResult.steps,
+              },
+            },
+          })
+            .then((result) =>
+              console.log(
+                `[diagnostics] saved ${result.paths.length} low-confidence artifact(s) for ${job.id}`,
+              ),
+            )
+            .catch((err) =>
+              console.warn(
+                `[diagnostics] low-confidence upload soft-failed: ${err instanceof Error ? err.message : err}`,
+              ),
+            );
+        }
 
         const objectPath = `${job.id}/demo.mp4`;
         const uploaded = await uploadFinishedMp4({

@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assessRenderedVideo,
+  assessVisualStory,
   chooseBodyPlaybackSpeed,
   dedupeVisualSegments,
   normalizedFrameDifference,
   planRenderedBodyRepair,
+  selectStoryArc,
   selectMeaningfulEnding,
+  truthfulCaptionForSegment,
 } from "../src/video-quality.js";
 
 const segment = (description, caption, kind, start, end, box = null) => ({
@@ -139,6 +142,78 @@ test("large body shortfalls still fail instead of being hidden", () => {
     minBodySegments: 3,
   });
   assert.equal(repair.needed, false);
+});
+
+test("story selection preserves hook, action, and verified payoff", () => {
+  const segments = [
+    segment("Land on hero", "Meet Product", "pause", 0, 3.8),
+    segment("Browse feature one", "Feature one", "pause", 3.8, 7.6),
+    segment("Browse feature two", "Feature two", "pause", 7.6, 11.4),
+    segment("Type a prompt", "Describe your goal", "type", 11.4, 15.4),
+    segment("Generate", "Generate the result", "click", 15.4, 19.4),
+    {
+      ...segment("Pause on generated result", "Review the result", "pause", 19.4, 23.4),
+      resultVerified: true,
+    },
+  ];
+  const selected = selectStoryArc(segments, { maxSegments: 5 }).segments;
+  assert.equal(selected.length, 5);
+  assert.equal(selected[0].caption, "Meet Product");
+  assert.ok(selected.some((item) => item.stepKind === "type"));
+  assert.equal(selected.at(-1).resultVerified, true);
+});
+
+test("unproven passive result captions are removed", () => {
+  assert.equal(
+    truthfulCaptionForSegment({
+      caption: "Review the result",
+      stepKind: "pause",
+      resultVerified: false,
+    }),
+    "",
+  );
+  assert.equal(
+    truthfulCaptionForSegment({
+      caption: "Review the result",
+      stepKind: "pause",
+      resultVerified: true,
+    }),
+    "Review the result",
+  );
+});
+
+test("visual review identifies a claimed result without proof", () => {
+  const frames = [
+    Buffer.alloc(64 * 36, 10),
+    Buffer.alloc(64 * 36, 80),
+    Buffer.alloc(64 * 36, 160),
+  ];
+  const review = assessVisualStory({
+    segments: [
+      segment("Land on hero", "Meet it", "pause", 0, 4),
+      {
+        ...segment("Generate result", "Generate the result", "click", 4, 8),
+        resultExpected: true,
+      },
+      segment("Feature", "Fast workflow", "pause", 8, 12),
+    ],
+    frames,
+  });
+  assert.equal(review.lowConfidence, true);
+  assert.match(review.reasons.join(" "), /no verified outcome/);
+});
+
+test("visual review records missing rendered frames as low confidence", () => {
+  const review = assessVisualStory({
+    segments: [
+      segment("Land on hero", "Meet it", "pause", 0, 4),
+      segment("Type a prompt", "Describe it", "type", 4, 8),
+      segment("Open preview", "Preview", "click", 8, 12),
+    ],
+    frames: [null, null, null],
+  });
+  assert.equal(review.lowConfidence, true);
+  assert.match(review.reasons.join(" "), /frames were unavailable/);
 });
 
 test("final media inspection blocks technically incomplete output", () => {

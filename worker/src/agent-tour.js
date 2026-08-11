@@ -13,6 +13,7 @@ import {
   normalizeLabel,
 } from "./resolve-selectors.js";
 import { executeStep } from "./record.js";
+import { waitForPageReadiness } from "./page-readiness.js";
 import { ingestRepoLight } from "./generate-storyboard.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
 import {
@@ -678,8 +679,11 @@ function mergeUniqueBeats(primary, fallback, limit = 4) {
   return out;
 }
 
-function pickResultSurface(elements, claimedHints = [], plannedHints = [], beforeHints = []) {
-  const blocked = new Set([...claimedHints, ...plannedHints]);
+function pickResultSurface(elements, claimedHints = [], beforeHints = []) {
+  // A future result surface may already appear in the model's plan. Do not
+  // reject it for that reason: the proof is that it was absent before the
+  // interaction, the page state changed, and the surface then stayed stable.
+  const blocked = new Set(claimedHints);
   const before = new Set(beforeHints);
   const candidate = (elements || [])
     .filter((el) => {
@@ -689,10 +693,18 @@ function pickResultSurface(elements, claimedHints = [], plannedHints = [], befor
     .map((el) => {
       const name = String(el.name || "").toLowerCase();
       let score = 0;
+      if (el.resultSurface) score += 10;
       if (/generated|result|output|preview|response|subject line|email body/.test(name)) score += 12;
       if (/copy|download|export|share|save/.test(name)) score += 9;
       if (/^h[2-3]$/.test(el.tag)) score += 3;
       if (["button", "a"].includes(el.tag)) score += 1;
+      if (
+        /\b(error|failed|failure|invalid|required|unable|couldn'?t|cannot|try again|denied|unauthori[sz]ed|forbidden|rate limit)\b/.test(
+          name,
+        )
+      ) {
+        score -= 24;
+      }
       return { el, score };
     })
     .filter((item) => item.score >= 8)
@@ -707,7 +719,9 @@ function pickResultSurface(elements, claimedHints = [], plannedHints = [], befor
 
 function isResultProducingBeat(beat) {
   const blob = `${beat?.description || ""} ${beat?.targetHint || ""}`;
-  return /\b(generate|submit|send|create|draft|run|analy[sz]e|convert|render)\b/i.test(blob);
+  return /\b(generate|submit|send|create|draft|run|analy[sz]e|convert|render|apply|predict|calculate|check|search|ask|compose|transform|process|summari[sz]e|translate)\b/i.test(
+    blob,
+  );
 }
 
 function orderProductBeats(beats) {
@@ -729,13 +743,44 @@ function orderProductBeats(beats) {
     });
 }
 
-async function waitForNewResultSurface(page, beforeHints, claimedHints, plannedHints) {
+async function waitForNewResultSurface(
+  page,
+  beforeHints,
+  beforeFingerprint,
+  claimedHints,
+) {
   const deadline = Date.now() + 18_000;
+  let stableHint = "";
+  let stableCount = 0;
   while (Date.now() < deadline) {
-    await sleep(750);
+    await waitForPageReadiness(page, { maxWaitMs: 2_600, quietMs: 350 });
     const elements = await enumerateElements(page);
-    const result = pickResultSurface(elements, claimedHints, plannedHints, beforeHints);
-    if (result) return result;
+    const result = pickResultSurface(elements, claimedHints, beforeHints);
+    const fingerprint = await captureStateFingerprint(page).catch(() => null);
+    if (!result || !fingerprint || fingerprint === beforeFingerprint) {
+      stableHint = "";
+      stableCount = 0;
+      await sleep(350);
+      continue;
+    }
+    if (result.targetHint === stableHint) stableCount += 1;
+    else {
+      stableHint = result.targetHint;
+      stableCount = 1;
+    }
+    if (stableCount >= 2) {
+      return {
+        ...result,
+        resultVerified: true,
+        storyPhase: "outcome",
+        resultEvidence: {
+          stateChanged: true,
+          stablePolls: stableCount,
+          fingerprint,
+        },
+      };
+    }
+    await sleep(350);
   }
   return null;
 }
@@ -988,10 +1033,7 @@ async function safeGoto(page, url) {
 }
 
 async function hydrateSettle(page) {
-  await page
-    .waitForLoadState("networkidle", { timeout: 10_000 })
-    .catch(() => {});
-  await sleep(SETTLE_MS);
+  await waitForPageReadiness(page, { maxWaitMs: 8_000 });
 }
 
 /**
@@ -1051,6 +1093,23 @@ export async function recordAgentTour(options) {
     recordVideo: { dir: videoDir, size: VIEWPORT },
     permissions: ["camera", "microphone"],
   });
+  const tracePath = path.join(videoDir, "trace.zip");
+  let traceStarted = false;
+  if (process.env.DEMOBRO_CAPTURE_DIAGNOSTICS !== "false") {
+    try {
+      await context.tracing.start({
+        screenshots: true,
+        snapshots: true,
+        sources: false,
+        title: `DemoBro ${jobId}`,
+      });
+      traceStarted = true;
+    } catch (err) {
+      console.warn(
+        `[diagnostics] trace start soft-failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
   await context.grantPermissions(["camera", "microphone"], { origin });
   const page = await context.newPage();
   page.setDefaultTimeout(STEP_TIMEOUT_MS);
@@ -1096,6 +1155,9 @@ export async function recordAgentTour(options) {
       });
     }
 
+    const beforeStateFingerprint = await captureStateFingerprint(page).catch(
+      () => null,
+    );
     const startMs = Date.now() - t0;
     const report = await executeStep(page, filmStep, i);
     const endMs = Date.now() - t0;
@@ -1108,6 +1170,16 @@ export async function recordAgentTour(options) {
       startMs,
       endMs,
       stateFingerprint,
+      beforeStateFingerprint,
+      stateChanged: Boolean(
+        beforeStateFingerprint &&
+          stateFingerprint &&
+          beforeStateFingerprint !== stateFingerprint,
+      ),
+      resultExpected: Boolean(step.resultExpected || isResultProducingBeat(step)),
+      resultVerified: Boolean(step.resultVerified),
+      resultEvidence: step.resultEvidence || null,
+      storyPhase: step.storyPhase || null,
       caption: step.caption || report.caption || "",
     });
     const boxLog = report.box
@@ -1144,7 +1216,6 @@ export async function recordAgentTour(options) {
   const session = (async () => {
     await safeGoto(page, safe.url.toString());
     await hydrateSettle(page);
-    await sleep(800);
 
     let pageIndex = 0;
     let done = false;
@@ -1548,7 +1619,10 @@ export async function recordAgentTour(options) {
       for (const beat of plan.beats) {
         if (succeeded() >= beatBudget || timedOut) break;
         const beforeElements = await enumerateElements(page);
-        const beforeHints = beforeElements.map(selectorFor);
+        // Hidden result containers often already exist in the DOM. Only block
+        // surfaces that were actually visible before the interaction so a
+        // newly revealed result can count as outcome proof.
+        const beforeHints = beforeElements.filter((el) => el.visible).map(selectorFor);
         const beforeUrl = pathKey(page.url());
         await filmOne({
           id: `p${pageIndex}-b${reports.length}`,
@@ -1576,8 +1650,8 @@ export async function recordAgentTour(options) {
           const resultBeat = await waitForNewResultSurface(
             page,
             beforeHints,
+            latest.beforeStateFingerprint,
             [...claimed],
-            plan.beats.map((item) => item.targetHint),
           );
           if (resultBeat) {
             console.log(`[agent] revealed result surface → ${resultBeat.targetHint}`);
@@ -1585,6 +1659,12 @@ export async function recordAgentTour(options) {
               id: `p${pageIndex}-result-${reports.length}`,
               ...resultBeat,
             });
+          } else {
+            latest.resultExpected = true;
+            latest.resultVerified = false;
+            console.warn(
+              `[agent] no stable result surface after "${beat.description}"; keeping action caption only`,
+            );
           }
         }
       }
@@ -1725,15 +1805,39 @@ export async function recordAgentTour(options) {
     }
   });
 
+  let sessionError = null;
   try {
     await Promise.race([session, timeout]);
   } catch (err) {
-    if (!timedOut) throw err;
-    console.warn("[agent] hard timeout — saving whatever was captured");
+    if (!timedOut) sessionError = err;
+    if (timedOut) {
+      console.warn("[agent] hard timeout — saving whatever was captured");
+    }
   }
 
   const video = page.video();
+  if (traceStarted) {
+    try {
+      await withTimeout(
+        context.tracing.stop({ path: tracePath }),
+        12_000,
+        "trace stop timed out",
+      );
+    } catch (err) {
+      console.warn(
+        `[diagnostics] trace stop soft-failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
   await closeBrowserSafely(browser, context, 15_000);
+
+  if (sessionError) {
+    if (sessionError && typeof sessionError === "object") {
+      sessionError.videoDir = videoDir;
+      sessionError.tracePath = traceStarted ? tracePath : null;
+    }
+    throw sessionError;
+  }
 
   if (video) {
     try {
@@ -1760,7 +1864,10 @@ export async function recordAgentTour(options) {
     videoPath = await findNewestWebm(videoDir);
   }
   if (!videoPath) {
-    throw new Error("Recording finished but no video file was written.");
+    const err = new Error("Recording finished but no video file was written.");
+    err.videoDir = videoDir;
+    err.tracePath = traceStarted ? tracePath : null;
+    throw err;
   }
 
   const succeededCount = reports.filter((r) => r.status === "succeeded").length;
@@ -1778,6 +1885,7 @@ export async function recordAgentTour(options) {
     pagePlans,
     title,
     description,
+    tracePath: traceStarted ? tracePath : null,
     succeeded: succeededCount,
     skipped: skippedCount,
     mode: "agent",

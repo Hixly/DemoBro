@@ -1,9 +1,15 @@
 import { readFile, stat } from "node:fs/promises";
 import {
+  DIAGNOSTICS_BUCKET,
   getSupabaseAdmin,
   STORAGE_BUCKET,
   VIDEO_TTL_SECONDS,
 } from "./supabase.js";
+
+const DIAGNOSTIC_CONTENT_TYPES = {
+  ".zip": "application/zip",
+  ".json": "application/json",
+};
 
 /**
  * Upload finished MP4 to the existing Storage bucket and return a 6h signed URL.
@@ -43,6 +49,67 @@ export async function uploadFinishedMp4(opts) {
     bytes: info.size,
     expiresInSec: VIDEO_TTL_SECONDS,
   };
+}
+
+/**
+ * Preserve private support evidence for failed or low-confidence jobs.
+ * Raw video is intentionally excluded; traces + structured review are enough
+ * to debug the browser path without publishing another copy of the footage.
+ */
+export async function uploadDiagnosticBundle({ jobId, files = [], manifest }) {
+  const supabase = getSupabaseAdmin();
+  const { data: bucket, error: bucketError } = await supabase.storage.getBucket(
+    DIAGNOSTICS_BUCKET,
+  );
+  if (bucketError) {
+    throw new Error(`Diagnostics bucket unavailable: ${bucketError.message}`);
+  }
+  if (bucket?.public) {
+    throw new Error("Diagnostics bucket must remain private.");
+  }
+
+  const uploaded = [];
+  for (const file of files.filter(Boolean)) {
+    try {
+      const bytes = await readFile(file);
+      const extension = file.slice(file.lastIndexOf(".")).toLowerCase();
+      const name = file.replace(/\\/g, "/").split("/").pop();
+      const objectPath = `${jobId}/${name}`;
+      const { error } = await supabase.storage
+        .from(DIAGNOSTICS_BUCKET)
+        .upload(objectPath, bytes, {
+          contentType:
+            DIAGNOSTIC_CONTENT_TYPES[extension] || "application/octet-stream",
+          upsert: true,
+          cacheControl: "0",
+        });
+      if (error) throw error;
+      uploaded.push(objectPath);
+    } catch (err) {
+      if (err?.code === "ENOENT") continue;
+      throw new Error(
+        `Diagnostic upload failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  if (manifest) {
+    const objectPath = `${jobId}/manifest.json`;
+    const bytes = Buffer.from(JSON.stringify(manifest, null, 2));
+    const { error } = await supabase.storage
+      .from(DIAGNOSTICS_BUCKET)
+      .upload(objectPath, bytes, {
+        contentType: "application/json",
+        upsert: true,
+        cacheControl: "0",
+      });
+    if (error) {
+      throw new Error(`Diagnostic manifest upload failed: ${error.message}`);
+    }
+    uploaded.push(objectPath);
+  }
+
+  return { bucket: DIAGNOSTICS_BUCKET, paths: uploaded };
 }
 
 /**

@@ -3,6 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || "inbox";
+const diagnosticsBucket =
+  process.env.SUPABASE_DIAGNOSTICS_BUCKET?.trim() || "demobro-diagnostics";
 
 async function main() {
   console.log("[demobro-cron] cleanup starting");
@@ -37,6 +39,14 @@ async function main() {
       if (rmError) {
         console.warn(`[demobro-cron] storage remove ${job.id}: ${rmError.message}`);
       }
+    }
+    const { error: diagnosticsError } = await supabase.storage
+      .from(diagnosticsBucket)
+      .remove([`${job.id}/trace.zip`, `${job.id}/manifest.json`]);
+    if (diagnosticsError) {
+      console.warn(
+        `[demobro-cron] diagnostics remove ${job.id}: ${diagnosticsError.message}`,
+      );
     }
     const { error: delError } = await supabase.from("jobs").delete().eq("id", job.id);
     if (delError) {

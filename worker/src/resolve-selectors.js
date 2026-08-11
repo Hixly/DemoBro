@@ -150,6 +150,10 @@ export async function enumerateElements(page) {
         el.disabled === true ||
         el.getAttribute("aria-disabled") === "true" ||
         el.getAttribute("disabled") !== null;
+      const resultSurface = el.matches(
+        "output, [role='status'], [role='alert'], [aria-live='polite'], " +
+          "[aria-live='assertive'], [data-result], [data-output]",
+      );
       out.push({
         tag: el.tagName.toLowerCase(),
         role: role || el.getAttribute("role") || "",
@@ -164,6 +168,7 @@ export async function enumerateElements(page) {
         href,
         visible: isVisible(el),
         disabled,
+        resultSurface,
       });
     };
 
@@ -180,6 +185,12 @@ export async function enumerateElements(page) {
     document
       .querySelectorAll("h1, h2, h3, [role='heading']")
       .forEach((el) => push(el, "heading"));
+    document
+      .querySelectorAll(
+        "output, [role='status'], [role='alert'], [aria-live='polite'], " +
+          "[aria-live='assertive'], [data-result], [data-output]",
+      )
+      .forEach((el) => push(el, el.getAttribute("role") || "output"));
 
     return out;
   });

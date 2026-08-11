@@ -5,6 +5,10 @@ import { assertSafePublicUrl } from "./ssrf.js";
 import { resolveStep } from "./resolve-selectors.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
 import {
+  waitForMeaningfulResponse,
+  waitForPageReadiness,
+} from "./page-readiness.js";
+import {
   closeBrowserSafely,
   findNewestWebm,
   killOrphanBrowsers,
@@ -468,7 +472,7 @@ export async function executeStep(page, step, index) {
     if (looksLikeUrl(step.targetHint)) {
       const actionOffsetMs = Date.now() - stepStartedAt;
       await safeGoto(page, step.targetHint);
-      await sleep(SETTLE_MS + 1_000);
+      await waitForPageReadiness(page, { maxWaitMs: 7_000 });
       return finishOk({
         ...base,
         actionOffsetMs,
@@ -502,7 +506,7 @@ export async function executeStep(page, step, index) {
 
     if (stepKind === "pause") {
       await locator.hover({ timeout: STEP_TIMEOUT_MS }).catch(() => {});
-      await sleep(SETTLE_MS + 1_200);
+      await waitForPageReadiness(page, { maxWaitMs: 3_200 });
       return finishOk({
         ...base,
         ...meta,
@@ -522,7 +526,7 @@ export async function executeStep(page, step, index) {
       } catch {
         await locator.pressSequentially(value, { delay: 25 }).catch(() => {});
       }
-      await sleep(SETTLE_MS + 1_000);
+      await waitForPageReadiness(page, { maxWaitMs: 4_000 });
       return finishOk({
         ...base,
         ...meta,
@@ -555,6 +559,15 @@ export async function executeStep(page, step, index) {
       };
     }
 
+    const looksSubmit =
+      /generat|submit|send|create|draft|run|analy[sz]e|convert|render|apply|predict|calculate|check|search|ask|compose|transform|process|summari[sz]e|translate/i.test(
+        desc,
+      );
+    const opensSheet = /detail|sample|share|history|save|wallet/i.test(desc);
+    const networkSignal = looksSubmit
+      ? waitForMeaningfulResponse(page, 8_000)
+      : null;
+
     // Prefer force when a sheet/modal may intercept (common after "view details").
     const actionOffsetMs = Date.now() - stepStartedAt;
     try {
@@ -575,23 +588,10 @@ export async function executeStep(page, step, index) {
     }
 
     // Generate/submit often reveals result UI — wait for it before the next beat.
-    const looksSubmit = /generat|submit|send|create|draft/i.test(desc);
-    const opensSheet = /detail|sample|share|history|save/i.test(desc);
-    if (looksSubmit) {
-      await Promise.race([
-        page
-          .getByRole("button", { name: /copy/i })
-          .first()
-          .waitFor({ state: "visible", timeout: 8_000 })
-          .catch(() => {}),
-        sleep(SETTLE_MS + 2_400),
-      ]);
-      await sleep(800);
-    } else if (opensSheet) {
-      await sleep(SETTLE_MS + 1_400);
-    } else {
-      await sleep(SETTLE_MS + 900);
-    }
+    await waitForPageReadiness(page, {
+      networkSignal,
+      maxWaitMs: looksSubmit ? 9_000 : opensSheet ? 5_500 : 4_000,
+    });
     return finishOk({
       ...base,
       ...meta,
@@ -668,10 +668,9 @@ export async function recordStoryboard(options) {
 
   const session = (async () => {
     await safeGoto(page, safe.url.toString());
-    await sleep(SETTLE_MS);
-    await sleep(1_000); // SPA hydration beat before step 1
+    await waitForPageReadiness(page, { maxWaitMs: 8_000 });
     await dismissEntryBlockers(page);
-    await sleep(300);
+    await waitForPageReadiness(page, { maxWaitMs: 2_500 });
 
     // Keep EVERY planned step. Resolve each one just-in-time against the live
     // DOM after prior steps have run — so Analyze/post-Generate UI can appear.

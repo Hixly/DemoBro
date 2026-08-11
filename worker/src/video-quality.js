@@ -57,6 +57,158 @@ function textOf(segment) {
     .toLowerCase();
 }
 
+export function storyPhaseOf(segment, index = 0) {
+  const text = textOf(segment);
+  if (segment?.resultVerified) return "outcome";
+  if (index === 0 || /\b(land|hero|overview|meet|introduce)\b/.test(text)) {
+    return "hook";
+  }
+  if (["click", "type", "nav"].includes(segment?.stepKind)) return "action";
+  return "feature";
+}
+
+export function truthfulCaptionForSegment(segment) {
+  const caption = String(segment?.caption || "").trim();
+  if (!caption || segment?.resultVerified) return caption;
+  const claimsVisibleOutcome =
+    /\b(review|see|view|look at|here(?:'s| is)|your)\b.*\b(result|output|response|preview)\b/i.test(
+      caption,
+    );
+  if (claimsVisibleOutcome && segment?.stepKind === "pause") return "";
+  return caption;
+}
+
+function storyValueScore(segment, index) {
+  let score = segmentValueScore(segment);
+  const phase = storyPhaseOf(segment, index);
+  if (phase === "hook") score += 5;
+  if (phase === "action") score += 7;
+  if (phase === "outcome") score += 12;
+  if (segment?.stateChanged) score += 3;
+  return score;
+}
+
+/** Keep a concise chronological hook → interaction → payoff arc. */
+export function selectStoryArc(
+  segments,
+  { minSegments = 3, maxSegments = 5 } = {},
+) {
+  const source = Array.isArray(segments) ? segments : [];
+  if (source.length <= maxSegments) {
+    return { segments: [...source], dropped: [] };
+  }
+
+  const entries = source.map((segment, index) => ({
+    segment,
+    index,
+    phase: storyPhaseOf(segment, index),
+    score: storyValueScore(segment, index),
+  }));
+  const picked = new Set();
+  const pickBest = (phase) => {
+    const best = entries
+      .filter((entry) => entry.phase === phase && !picked.has(entry.index))
+      .sort((a, b) => b.score - a.score || a.index - b.index)[0];
+    if (best) picked.add(best.index);
+  };
+  pickBest("hook");
+  pickBest("action");
+  pickBest("outcome");
+
+  for (const entry of [...entries].sort(
+    (a, b) => b.score - a.score || a.index - b.index,
+  )) {
+    if (picked.size >= maxSegments) break;
+    picked.add(entry.index);
+  }
+  for (const entry of entries) {
+    if (picked.size >= Math.min(minSegments, source.length)) break;
+    picked.add(entry.index);
+  }
+
+  const selected = entries
+    .filter((entry) => picked.has(entry.index))
+    .sort((a, b) => a.index - b.index);
+  return {
+    segments: selected.map((entry) => entry.segment),
+    dropped: entries
+      .filter((entry) => !picked.has(entry.index))
+      .map((entry) => ({
+        sourceIndex: entry.index,
+        reason: "lower-value story beat",
+      })),
+  };
+}
+
+export function assessVisualStory({
+  segments,
+  frames = [],
+  minSegments = 3,
+}) {
+  const source = Array.isArray(segments) ? segments : [];
+  const reasons = [];
+  const phases = source.map((segment, index) => storyPhaseOf(segment, index));
+  const hasInteraction = source.some((segment) =>
+    ["click", "type", "nav"].includes(segment?.stepKind),
+  );
+  const expectsOutcome = source.some(
+    (segment) =>
+      segment?.resultExpected ||
+      /\b(generate|submit|send|create|draft|run|analy[sz]e|convert|render|apply|predict|calculate|check|search|ask|compose|transform|process|summari[sz]e|translate)\b/i.test(
+        `${segment?.description || ""} ${segment?.caption || ""}`,
+      ),
+  );
+  const hasVerifiedOutcome = source.some((segment) => segment?.resultVerified);
+  const falseOutcomeCaption = source.some((segment) => {
+    const caption = String(segment?.caption || "");
+    return (
+      !segment?.resultVerified &&
+      segment?.stepKind === "pause" &&
+      /\b(review|see|view|look at)\b.*\b(result|output|response|preview)\b/i.test(
+        caption,
+      )
+    );
+  });
+
+  const representatives = [];
+  for (const frame of frames.filter(Boolean)) {
+    if (
+      representatives.every(
+        (representative) =>
+          normalizedFrameDifference(representative, frame) >
+          VISUAL_DUPLICATE_THRESHOLD,
+      )
+    ) {
+      representatives.push(frame);
+    }
+  }
+
+  if (source.length < minSegments) reasons.push("too few story beats");
+  if (!hasInteraction) reasons.push("no visible interaction");
+  const reviewedFrameCount = frames.filter(Boolean).length;
+  if (source.length && frames.length && reviewedFrameCount === 0) {
+    reasons.push("rendered frames were unavailable for visual review");
+  } else if (reviewedFrameCount && representatives.length < 2) {
+    reasons.push("fewer than two visually distinct rendered states");
+  }
+  if (expectsOutcome && !hasVerifiedOutcome) {
+    reasons.push("result-producing action has no verified outcome");
+  }
+  if (falseOutcomeCaption) reasons.push("outcome caption is not visually proven");
+
+  return {
+    ok: reasons.length === 0,
+    lowConfidence: reasons.length > 0,
+    reasons,
+    phases,
+    distinctVisualStates: representatives.length,
+    hasInteraction,
+    expectsOutcome,
+    hasVerifiedOutcome,
+    confidence: Math.max(0, 1 - reasons.length * 0.2),
+  };
+}
+
 export function normalizedFrameDifference(left, right) {
   if (!left || !right || left.length === 0 || left.length !== right.length) {
     return 1;

@@ -7,11 +7,14 @@ import { renderCardPng, W, H } from "./cards.js";
 import { RENDER_TIMEOUT_MS } from "./job-utils.js";
 import {
   MIN_RENDERED_BODY_SECONDS,
+  assessVisualStory,
   assessRenderedVideo,
   chooseBodyPlaybackSpeed,
   dedupeVisualSegments,
   planRenderedBodyRepair,
+  selectStoryArc,
   selectMeaningfulEnding,
+  truthfulCaptionForSegment,
 } from "./video-quality.js";
 
 /**
@@ -330,7 +333,7 @@ export function planSegments(timeline, totalDurationSec) {
       stepKind,
       step.description ?? "",
     );
-    segments.push({
+    const planned = {
       start,
       end,
       box: cleaned.box,
@@ -340,7 +343,16 @@ export function planSegments(timeline, totalDurationSec) {
       actionTimeSec: actionAt === null ? null : Math.max(0, actionAt - start),
       description: step.description ?? "",
       caption: step.caption ?? "",
-    });
+      stateFingerprint: step.stateFingerprint ?? null,
+      beforeStateFingerprint: step.beforeStateFingerprint ?? null,
+      stateChanged: Boolean(step.stateChanged),
+      resultExpected: Boolean(step.resultExpected),
+      resultVerified: Boolean(step.resultVerified),
+      resultEvidence: step.resultEvidence ?? null,
+      storyPhase: step.storyPhase ?? null,
+    };
+    planned.caption = truthfulCaptionForSegment(planned);
+    segments.push(planned);
   }
 
   // If individual steps lack contentBounds, estimate a page content column
@@ -1288,11 +1300,24 @@ async function resolveLogoPath(explicit) {
 }
 
 async function refineSegments(rawVideoPath, plannedSegments, minBodySegments) {
+  const minimumSegments = Math.max(1, Number(minBodySegments || 0));
+  const minimumBodySeconds = minBodySegments ? MIN_RENDERED_BODY_SECONDS : 0;
+  const arc = selectStoryArc(plannedSegments, {
+    minSegments: minimumSegments,
+    maxSegments: minBodySegments ? 5 : 6,
+  });
+  for (const change of arc.dropped) {
+    console.log(`[quality] removed beat ${change.sourceIndex + 1}: ${change.reason}`);
+  }
+
   const frames = [];
-  for (const segment of plannedSegments) {
+  const frameBySegment = new Map();
+  for (const segment of arc.segments) {
     const sampleAt = Math.max(segment.start, segment.end - 0.4);
     try {
-      frames.push(await captureGrayFrame(rawVideoPath, sampleAt));
+      const frame = await captureGrayFrame(rawVideoPath, sampleAt);
+      frames.push(frame);
+      frameBySegment.set(segment, frame);
     } catch (err) {
       console.warn(
         `[quality] visual sample soft-failed at ${sampleAt.toFixed(2)}s: ${
@@ -1300,12 +1325,11 @@ async function refineSegments(rawVideoPath, plannedSegments, minBodySegments) {
         }`,
       );
       frames.push(null);
+      frameBySegment.set(segment, null);
     }
   }
 
-  const minimumSegments = Math.max(1, Number(minBodySegments || 0));
-  const minimumBodySeconds = minBodySegments ? MIN_RENDERED_BODY_SECONDS : 0;
-  const deduped = dedupeVisualSegments(plannedSegments, frames, {
+  const deduped = dedupeVisualSegments(arc.segments, frames, {
     minSegments: minimumSegments,
     minBodySeconds: minimumBodySeconds,
   });
@@ -1323,10 +1347,20 @@ async function refineSegments(rawVideoPath, plannedSegments, minBodySegments) {
   for (const change of ending.changes) {
     console.log(`[quality] ${change.reason}`);
   }
+  const selectedFrames = ending.segments.map(
+    (segment) => frameBySegment.get(segment) || null,
+  );
+  const visualReview = assessVisualStory({
+    segments: ending.segments,
+    frames: selectedFrames,
+    minSegments: minimumSegments,
+  });
   return {
     segments: ending.segments,
+    storyDrops: arc.dropped,
     removedDuplicates: deduped.dropped,
     endingChanges: ending.changes,
+    visualReview,
   };
 }
 
@@ -1428,17 +1462,13 @@ export async function renderDemo(opts) {
     await ensureSilentAudio(titlePath, titleSilent, TITLE_SECS);
     await ensureSilentAudio(outroPath, outroSilent, OUTRO_SECS);
 
-    const clipPaths = [];
-    const renderedSegmentMeta = [];
+    let clipPaths = [];
+    let renderedSegmentMeta = [];
     const failedSegments = [];
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
       try {
-        const segment =
-          i === segments.length - 1
-            ? { ...segments[i], transitionToOutro: true }
-            : segments[i];
-        await extractSegment(opts.rawVideoPath, segment, clip, speed);
+        await extractSegment(opts.rawVideoPath, segments[i], clip, speed);
         clipPaths.push(clip);
         renderedSegmentMeta.push({ index: i, segment: segments[i], clip });
       } catch (err) {
@@ -1451,18 +1481,6 @@ export async function renderDemo(opts) {
         failedSegments.push(i);
       }
     }
-    const lastRendered = renderedSegmentMeta[renderedSegmentMeta.length - 1];
-    if (lastRendered && lastRendered.index !== segments.length - 1) {
-      console.log(
-        `[render] restoring outro bridge on beat ${lastRendered.index + 1} after a later beat failed`,
-      );
-      await extractSegment(
-        opts.rawVideoPath,
-        { ...lastRendered.segment, transitionToOutro: true },
-        lastRendered.clip,
-        speed,
-      );
-    }
     if (opts.minBodySegments && clipPaths.length < opts.minBodySegments) {
       throw new Error(
         `Rendered only ${clipPaths.length} body beats; ${opts.minBodySegments} are required.`,
@@ -1471,6 +1489,78 @@ export async function renderDemo(opts) {
     if (!clipPaths.length && segments.length) {
       throw new Error("Every beat failed to render.");
     }
+
+    const renderedFrames = [];
+    const renderedFrameBySegment = new Map();
+    for (const meta of renderedSegmentMeta) {
+      try {
+        const duration = await probeDuration(meta.clip);
+        const frame = await captureGrayFrame(meta.clip, Math.max(0.1, duration * 0.62));
+        renderedFrames.push(frame);
+        renderedFrameBySegment.set(meta.segment, frame);
+      } catch (err) {
+        console.warn(
+          `[quality] rendered beat review soft-failed: ${err instanceof Error ? err.message : err}`,
+        );
+        renderedFrames.push(null);
+        renderedFrameBySegment.set(meta.segment, null);
+      }
+    }
+
+    let visualReview = assessVisualStory({
+      segments: renderedSegmentMeta.map((meta) => meta.segment),
+      frames: renderedFrames,
+      minSegments: Math.max(1, Number(opts.minBodySegments || 0)),
+    });
+    if (visualReview.lowConfidence && renderedSegmentMeta.length > opts.minBodySegments) {
+      const reedit = dedupeVisualSegments(
+        renderedSegmentMeta.map((meta) => meta.segment),
+        renderedFrames,
+        {
+          minSegments: Math.max(1, Number(opts.minBodySegments || 0)),
+          minBodySeconds: opts.minBodySegments ? MIN_RENDERED_BODY_SECONDS : 0,
+        },
+      );
+      const ending = selectMeaningfulEnding(reedit.segments, {
+        minSegments: Math.max(1, Number(opts.minBodySegments || 0)),
+        minBodySeconds: opts.minBodySegments ? MIN_RENDERED_BODY_SECONDS : 0,
+      });
+      const selected = new Set(ending.segments);
+      const reeditedMeta = renderedSegmentMeta.filter((meta) =>
+        selected.has(meta.segment),
+      );
+      if (reeditedMeta.length >= Math.max(1, Number(opts.minBodySegments || 0))) {
+        if (reeditedMeta.length !== renderedSegmentMeta.length) {
+          console.log(
+            `[quality] final review re-edit ${renderedSegmentMeta.length} → ${reeditedMeta.length} beats`,
+          );
+        }
+        renderedSegmentMeta = reeditedMeta;
+        clipPaths = reeditedMeta.map((meta) => meta.clip);
+        visualReview = assessVisualStory({
+          segments: reeditedMeta.map((meta) => meta.segment),
+          frames: reeditedMeta.map(
+            (meta) => renderedFrameBySegment.get(meta.segment) || null,
+          ),
+          minSegments: Math.max(1, Number(opts.minBodySegments || 0)),
+        });
+      }
+    }
+
+    const lastRendered = renderedSegmentMeta[renderedSegmentMeta.length - 1];
+    if (lastRendered) {
+      await extractSegment(
+        opts.rawVideoPath,
+        { ...lastRendered.segment, transitionToOutro: true },
+        lastRendered.clip,
+        speed,
+      );
+    }
+    console.log(
+      `[quality] visual review confidence=${visualReview.confidence.toFixed(2)} ` +
+        `states=${visualReview.distinctVisualStates} ` +
+        `${visualReview.reasons.length ? visualReview.reasons.join("; ") : "passed"}`,
+    );
 
     const bodyPath = path.join(tmp, "body.mp4");
     if (clipPaths.length) {
@@ -1543,9 +1633,17 @@ export async function renderDemo(opts) {
         `beats=${clipPaths.length} bytes=${fileInfo.size}`,
     );
     if (!inspection.ok) {
-      throw new Error(
+      const err = new Error(
         `Rendered video quality check failed: ${inspection.reasons.join("; ")}.`,
       );
+      err.diagnosticDetails = {
+        inspection,
+        visualReview,
+        bodyDurationSec,
+        renderedSegments: clipPaths.length,
+        failedSegments,
+      };
+      throw err;
     }
     return {
       outputPath: opts.outputPath,
@@ -1555,8 +1653,10 @@ export async function renderDemo(opts) {
       plannedSegments: plannedSegments.length,
       renderedSegments: clipPaths.length,
       failedSegments,
+      storyDrops: refinement.storyDrops,
       removedDuplicates: refinement.removedDuplicates,
       endingChanges: refinement.endingChanges,
+      visualReview,
       inspection,
       speed,
       logoPath,

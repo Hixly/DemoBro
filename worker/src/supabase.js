@@ -21,4 +21,7 @@ export function getSupabaseAdmin() {
 export const STORAGE_BUCKET =
   process.env.SUPABASE_STORAGE_BUCKET?.trim() || "inbox";
 
+export const DIAGNOSTICS_BUCKET =
+  process.env.SUPABASE_DIAGNOSTICS_BUCKET?.trim() || "demobro-diagnostics";
+
 export const VIDEO_TTL_SECONDS = 6 * 60 * 60;
