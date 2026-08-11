@@ -33,6 +33,15 @@ const XFADE = 0.55;
 const MAX_SECS = 30;
 const FADE_IN = 0.55;
 const FADE_OUT = 0.4;
+const OUTRO_BRIDGE_SECS = 0.38;
+const CARD_BACKGROUND = "0xFAF9F6";
+
+const MAX_BEAT_SECS = {
+  pause: 3.2,
+  nav: 3.4,
+  type: 3.6,
+  click: 3.8,
+};
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_CANDIDATES = [
@@ -189,16 +198,29 @@ export function planSegments(timeline, totalDurationSec) {
 
   const segments = [];
   for (const step of steps) {
-    // Keep a little lead-in / trail so each beat can breathe (~5s windows).
-    let start = Math.max(0, ((step.startMs ?? 0) - 250) / 1000);
-    let end = Math.min(totalDurationSec, ((step.endMs ?? 0) + 800) / 1000);
+    const stepKind = step.stepKind ?? "pause";
+    const stepStart = Math.max(0, Number(step.startMs ?? 0) / 1000);
+    const stepEnd = Math.max(stepStart, Number(step.endMs ?? 0) / 1000);
+    const maxBeat = MAX_BEAT_SECS[stepKind] ?? MAX_BEAT_SECS.click;
+    const actionOffsetMs = Number(step.actionOffsetMs);
+    const hasTimedAction =
+      (stepKind === "click" || stepKind === "type") &&
+      Number.isFinite(actionOffsetMs) &&
+      actionOffsetMs >= 0;
+    const actionAt = hasTimedAction ? stepStart + actionOffsetMs / 1000 : null;
+
+    // Settled look-beats use their final state. Interactive beats begin just
+    // before the real action so the rendered cursor stays synchronized.
+    let end = Math.min(totalDurationSec, stepEnd + 0.3);
+    let start = Math.max(0, stepStart - 0.15);
+    if (actionAt !== null) {
+      start = Math.max(0, actionAt - 0.55);
+      end = Math.min(end, start + maxBeat);
+    } else if (end - start > maxBeat) {
+      start = Math.max(0, end - maxBeat);
+    }
     const dur = end - start;
     if (dur < 0.35) continue;
-
-    // Only trim very long waits — keep up to ~5s of a good window.
-    if (dur > 6.5) {
-      start = Math.max(start, end - 5);
-    }
 
     const prev = segments[segments.length - 1];
     if (prev && start < prev.end) {
@@ -210,7 +232,7 @@ export function planSegments(timeline, totalDurationSec) {
       step.box ?? null,
       step.actionPoint ?? null,
       contentBounds,
-      step.stepKind ?? "pause",
+      stepKind,
       step.description ?? "",
     );
     segments.push({
@@ -219,7 +241,8 @@ export function planSegments(timeline, totalDurationSec) {
       box: cleaned.box,
       actionPoint: cleaned.actionPoint,
       contentBounds,
-      stepKind: step.stepKind ?? "pause",
+      stepKind,
+      actionTimeSec: actionAt === null ? null : Math.max(0, actionAt - start),
       description: step.description ?? "",
       caption: step.caption ?? "",
     });
@@ -641,6 +664,12 @@ function clickPulsePlan(seg, outDur) {
   let ax = Math.max(0, Math.min(W - 1, Math.round(pt.x)));
   let ay = Math.max(0, Math.min(H - 1, Math.round(pt.y)));
   let t0 = Math.min(0.55, Math.max(0.25, outDur * 0.22));
+  if (Number.isFinite(seg.actionTimeSec)) {
+    t0 = Math.min(
+      Math.max(0.18, outDur - 0.35),
+      Math.max(0.18, seg.actionTimeSec),
+    );
+  }
   let t1 = Math.min(outDur - 0.05, t0 + 0.55);
   // Generate-style CTAs: film jumps to loading instantly — captured Y lands on
   // Coming Soon. Aim the ring at the mid-form CTA band under our form zoom.
@@ -673,6 +702,9 @@ function captionCopyForSeg(seg) {
   }
 
   const raw = seg.description || "";
+  if (/^(?:land|pause|arrive)(?:\s+on)?\s+(?:the\s+)?hero\b/i.test(raw.trim())) {
+    return "";
+  }
   const short = shortenCaption(raw);
   if (!short) return "";
   // Analyze / similar with no box → don't pretend we clicked a missing control.
@@ -722,12 +754,19 @@ async function pngToFadedClip(
   pngPath,
   outPath,
   durationSec,
-  { fadeIn = true, fadeOut = true } = {},
+  {
+    fadeIn = true,
+    fadeOut = true,
+    fadeInColor = "black",
+    fadeOutColor = "black",
+  } = {},
 ) {
   const fadeOutStart = Math.max(0, durationSec - FADE_OUT);
   const fades = [
-    fadeIn ? `fade=t=in:st=0:d=${FADE_IN}` : "",
-    fadeOut ? `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${FADE_OUT}` : "",
+    fadeIn ? `fade=t=in:st=0:d=${FADE_IN}:color=${fadeInColor}` : "",
+    fadeOut
+      ? `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${FADE_OUT}:color=${fadeOutColor}`
+      : "",
   ].filter(Boolean);
   await run("ffmpeg", [
     "-y",
@@ -821,6 +860,19 @@ async function muxVideoAudio(videoPath, audioPath, outPath, outDur) {
   ]);
 }
 
+/** End-of-beat treatment; only the final beat fades through the outro cream. */
+export function buildSegmentEndFilter(outDur, transitionToOutro = false) {
+  const filters = [];
+  if (transitionToOutro) {
+    const start = Math.max(0, outDur - OUTRO_BRIDGE_SECS);
+    filters.push(
+      `fade=t=out:st=${start.toFixed(3)}:d=${OUTRO_BRIDGE_SECS}:color=${CARD_BACKGROUND}`,
+    );
+  }
+  filters.push("format=yuv420p");
+  return filters.join(",");
+}
+
 /**
  * Extract a footage window: spotlight → cursor → click ring → eased zoom →
  * vignette → caption PNG overlay → fades. Plain fps=30 CFR. Muxes soft SFX.
@@ -864,7 +916,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const zoomChain = [zoom, vignette].filter(Boolean).join(",");
   // Body beats use clean cuts. Fading every extracted segment to black caused
   // two-frame black flashes at every edit boundary.
-  const endFades = "format=yuv420p";
+  const endFades = buildSegmentEndFilter(outDur, Boolean(seg.transitionToOutro));
 
   if (!pulse && !hasCaption) {
     await run("ffmpeg", [
@@ -1203,10 +1255,12 @@ export async function renderDemo(opts) {
     await pngToFadedClip(titlePng, titlePath, TITLE_SECS, {
       fadeIn: true,
       fadeOut: false,
+      fadeInColor: CARD_BACKGROUND,
     });
     await pngToFadedClip(outroPng, outroPath, OUTRO_SECS, {
-      fadeIn: false,
+      fadeIn: true,
       fadeOut: true,
+      fadeInColor: CARD_BACKGROUND,
     });
     await ensureSilentAudio(titlePath, titleSilent, TITLE_SECS);
     await ensureSilentAudio(outroPath, outroSilent, OUTRO_SECS);
@@ -1216,7 +1270,11 @@ export async function renderDemo(opts) {
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
       try {
-        await extractSegment(opts.rawVideoPath, segments[i], clip, speed);
+        const segment =
+          i === segments.length - 1
+            ? { ...segments[i], transitionToOutro: true }
+            : segments[i];
+        await extractSegment(opts.rawVideoPath, segment, clip, speed);
         clipPaths.push(clip);
       } catch (err) {
         // Losing one beat is far better than losing the whole demo, so drop it
@@ -1251,8 +1309,8 @@ export async function renderDemo(opts) {
     }
 
     await mkdir(path.dirname(opts.outputPath), { recursive: true });
-    // Soft xfade title→body only. Hard-cut into outro — xfade from a zoomed
-    // last beat into the cream card reads as ghosted double-UI.
+    // Soft xfade title→body. The last beat has already faded to the outro's
+    // cream background, so a cut here is seamless without double-UI ghosting.
     const titleBody = path.join(tmp, "title-body.mp4");
     await concatWithXfade([titleSilent, bodyPath], titleBody, 0.35);
     await concatCuts([titleBody, outroSilent], opts.outputPath);
