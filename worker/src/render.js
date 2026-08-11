@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderCardPng, W, H } from "./cards.js";
 import { RENDER_TIMEOUT_MS } from "./job-utils.js";
+import {
+  MIN_RENDERED_BODY_SECONDS,
+  assessRenderedVideo,
+  dedupeVisualSegments,
+  selectMeaningfulEnding,
+} from "./video-quality.js";
 
 /**
  * x264 allocates frame buffers per thread and defaults to ~1.5x the host's core
@@ -26,9 +32,9 @@ const VIDEO_ENCODE_ARGS = [
   "-fps_mode", "cfr",
 ];
 
-const TITLE_SECS = 2.8;
-const OUTRO_SECS = 3.0;
-const XFADE = 0.55;
+const TITLE_SECS = 2.0;
+const OUTRO_SECS = 2.2;
+const TITLE_BODY_XFADE = 0.35;
 /** Soft ceiling — never pad/slow to fill; only speed up if over. */
 const MAX_SECS = 30;
 const FADE_IN = 0.55;
@@ -37,10 +43,10 @@ const OUTRO_BRIDGE_SECS = 0.38;
 const CARD_BACKGROUND = "0xFAF9F6";
 
 const MAX_BEAT_SECS = {
-  pause: 3.2,
-  nav: 3.4,
-  type: 3.6,
-  click: 3.8,
+  pause: 4.0,
+  nav: 4.1,
+  type: 4.2,
+  click: 4.3,
 };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +137,93 @@ function ffprobe(args) {
       else reject(new Error(`ffprobe failed: ${stderr}`));
     });
   });
+}
+
+function captureGrayFrame(file, timeSec) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "ffmpeg",
+      [
+        ...FFMPEG_THREAD_LIMITS,
+        "-v",
+        "error",
+        "-ss",
+        Math.max(0, timeSec).toFixed(3),
+        "-i",
+        file,
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=64:36:flags=area,format=gray",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+    );
+    const chunks = [];
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error("frame sampling timed out"));
+    }, 20_000);
+    child.stdout.on("data", (chunk) => chunks.push(chunk));
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const frame = Buffer.concat(chunks);
+      if (code !== 0 || frame.length < 64 * 36) {
+        reject(new Error(`frame sampling failed: ${stderr.slice(-300)}`));
+        return;
+      }
+      resolve(frame.subarray(0, 64 * 36));
+    });
+  });
+}
+
+function parseRate(value) {
+  const [numerator, denominator] = String(value || "").split("/").map(Number);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+    return null;
+  }
+  return numerator / denominator;
+}
+
+async function probeMediaInfo(file) {
+  const raw = await ffprobe([
+    "-v",
+    "error",
+    "-show_streams",
+    "-show_format",
+    "-of",
+    "json",
+    file,
+  ]);
+  const parsed = JSON.parse(raw);
+  const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+  const video = streams.find((stream) => stream.codec_type === "video");
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  return {
+    durationSec: Number(parsed.format?.duration),
+    width: Number(video?.width),
+    height: Number(video?.height),
+    fps: parseRate(video?.avg_frame_rate || video?.r_frame_rate),
+    hasVideo: Boolean(video),
+    hasAudio: Boolean(audio),
+  };
 }
 
 async function probeDuration(file) {
@@ -1120,7 +1213,11 @@ async function concatCuts(inputs, outPath) {
  * Soft xfade — use for title↔body↔outro only.
  * Body beats should use concatCuts to avoid zoom/caption ghosting.
  */
-async function concatWithXfade(inputs, outPath, fadeSec = XFADE) {
+async function concatWithXfade(
+  inputs,
+  outPath,
+  fadeSec = TITLE_BODY_XFADE,
+) {
   if (inputs.length === 1) {
     await run("ffmpeg", ["-y", "-i", inputs[0], "-c", "copy", outPath]);
     return;
@@ -1188,6 +1285,49 @@ async function resolveLogoPath(explicit) {
   );
 }
 
+async function refineSegments(rawVideoPath, plannedSegments, minBodySegments) {
+  const frames = [];
+  for (const segment of plannedSegments) {
+    const sampleAt = Math.max(segment.start, segment.end - 0.4);
+    try {
+      frames.push(await captureGrayFrame(rawVideoPath, sampleAt));
+    } catch (err) {
+      console.warn(
+        `[quality] visual sample soft-failed at ${sampleAt.toFixed(2)}s: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+      frames.push(null);
+    }
+  }
+
+  const minimumSegments = Math.max(1, Number(minBodySegments || 0));
+  const minimumBodySeconds = minBodySegments ? MIN_RENDERED_BODY_SECONDS : 0;
+  const deduped = dedupeVisualSegments(plannedSegments, frames, {
+    minSegments: minimumSegments,
+    minBodySeconds: minimumBodySeconds,
+  });
+  for (const change of deduped.dropped) {
+    console.log(
+      `[quality] removed duplicate beat ${change.sourceIndex + 1} ` +
+        `(frame difference=${change.difference.toFixed(4)})`,
+    );
+  }
+
+  const ending = selectMeaningfulEnding(deduped.segments, {
+    minSegments: minimumSegments,
+    minBodySeconds: minimumBodySeconds,
+  });
+  for (const change of ending.changes) {
+    console.log(`[quality] ${change.reason}`);
+  }
+  return {
+    segments: ending.segments,
+    removedDuplicates: deduped.dropped,
+    endingChanges: ending.changes,
+  };
+}
+
 /**
  * @param {{
  *   rawVideoPath: string,
@@ -1207,12 +1347,18 @@ export async function renderDemo(opts) {
     const logoPath = await resolveLogoPath(opts.logoPath);
     const total = await probeDuration(opts.rawVideoPath);
     const sourceFps = (await probeFps(opts.rawVideoPath)) ?? 25;
-    const segments = planSegments(opts.timeline, total);
+    const plannedSegments = planSegments(opts.timeline, total);
+    const refinement = await refineSegments(
+      opts.rawVideoPath,
+      plannedSegments,
+      opts.minBodySegments,
+    );
+    const segments = refinement.segments;
 
     const contentSecs = segments.reduce((acc, s) => acc + (s.end - s.start), 0);
     const cards = TITLE_SECS + OUTRO_SECS;
-    // Only title→body still xfades; body beats + outro are hard cuts.
-    const xfadeLoss = XFADE;
+    // Only title→body overlaps; the outro is bridged through a cream fade.
+    const xfadeLoss = TITLE_BODY_XFADE;
     const projected = contentSecs + cards - xfadeLoss;
     let speed = 1;
     if (projected > MAX_SECS) {
@@ -1246,7 +1392,11 @@ export async function renderDemo(opts) {
     await renderCardPng(
       outroPng,
       "outro",
-      { repoUrl: opts.repoUrl || "" },
+      {
+        title: opts.title || "this project",
+        liveUrl: (opts.liveUrl || "").replace(/^https?:\/\//, ""),
+        repoUrl: (opts.repoUrl || "").replace(/^https?:\/\//, ""),
+      },
       logoPath,
     );
 
@@ -1266,6 +1416,7 @@ export async function renderDemo(opts) {
     await ensureSilentAudio(outroPath, outroSilent, OUTRO_SECS);
 
     const clipPaths = [];
+    const renderedSegmentMeta = [];
     const failedSegments = [];
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
@@ -1276,6 +1427,7 @@ export async function renderDemo(opts) {
             : segments[i];
         await extractSegment(opts.rawVideoPath, segment, clip, speed);
         clipPaths.push(clip);
+        renderedSegmentMeta.push({ index: i, segment: segments[i], clip });
       } catch (err) {
         // Losing one beat is far better than losing the whole demo, so drop it
         // and keep cutting — the tour still reads with the remaining beats.
@@ -1285,6 +1437,18 @@ export async function renderDemo(opts) {
         );
         failedSegments.push(i);
       }
+    }
+    const lastRendered = renderedSegmentMeta[renderedSegmentMeta.length - 1];
+    if (lastRendered && lastRendered.index !== segments.length - 1) {
+      console.log(
+        `[render] restoring outro bridge on beat ${lastRendered.index + 1} after a later beat failed`,
+      );
+      await extractSegment(
+        opts.rawVideoPath,
+        { ...lastRendered.segment, transitionToOutro: true },
+        lastRendered.clip,
+        speed,
+      );
     }
     if (opts.minBodySegments && clipPaths.length < opts.minBodySegments) {
       throw new Error(
@@ -1307,21 +1471,49 @@ export async function renderDemo(opts) {
         1,
       );
     }
+    const bodyDurationSec = await probeDuration(bodyPath);
 
     await mkdir(path.dirname(opts.outputPath), { recursive: true });
     // Soft xfade title→body. The last beat has already faded to the outro's
     // cream background, so a cut here is seamless without double-UI ghosting.
     const titleBody = path.join(tmp, "title-body.mp4");
-    await concatWithXfade([titleSilent, bodyPath], titleBody, 0.35);
+    await concatWithXfade(
+      [titleSilent, bodyPath],
+      titleBody,
+      TITLE_BODY_XFADE,
+    );
     await concatCuts([titleBody, outroSilent], opts.outputPath);
 
-    const finalDuration = await probeDuration(opts.outputPath);
+    const media = await probeMediaInfo(opts.outputPath);
+    const fileInfo = await stat(opts.outputPath);
+    const inspection = assessRenderedVideo({
+      ...media,
+      bodyDurationSec,
+      bytes: fileInfo.size,
+      renderedSegments: clipPaths.length,
+      minBodySegments: Number(opts.minBodySegments || 0),
+    });
+    console.log(
+      `[quality] final=${media.durationSec.toFixed(2)}s body=${bodyDurationSec.toFixed(2)}s ` +
+        `${media.width}x${media.height}@${media.fps?.toFixed(2) || "?"}fps ` +
+        `beats=${clipPaths.length} bytes=${fileInfo.size}`,
+    );
+    if (!inspection.ok) {
+      throw new Error(
+        `Rendered video quality check failed: ${inspection.reasons.join("; ")}.`,
+      );
+    }
     return {
       outputPath: opts.outputPath,
-      durationSec: finalDuration,
+      durationSec: media.durationSec,
+      bodyDurationSec,
       segments: segments.length,
+      plannedSegments: plannedSegments.length,
       renderedSegments: clipPaths.length,
       failedSegments,
+      removedDuplicates: refinement.removedDuplicates,
+      endingChanges: refinement.endingChanges,
+      inspection,
       speed,
       logoPath,
       sourceFps,

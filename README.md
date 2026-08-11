@@ -28,6 +28,8 @@ DemoBro does not publish a title card followed by an empty landing page. Before 
 
 If the model cannot produce a complete tour, a generic DOM-driven fallback continues exploring the same site. The fallback looks for visible fields, primary actions, enabled-state changes, and result surfaces without product-specific selectors.
 
+The renderer then samples the filmed frames to remove near-identical passive shots, avoids weak footer-style endings, and keeps the strongest product moment at the finish. A final media inspection verifies the MP4's body duration, beat count, streams, resolution, frame rate, and file integrity before upload.
+
 ## How it works
 
 ```mermaid

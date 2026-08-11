@@ -51,7 +51,7 @@ test("long static waits are trimmed into crisp beats", () => {
     10,
   );
   assert.equal(segments.length, 1);
-  assert.ok(segments[0].end - segments[0].start <= 3.21);
+  assert.ok(segments[0].end - segments[0].start <= 4.01);
 });
 
 test("click beats align their pulse with the recorded action", () => {
@@ -69,7 +69,7 @@ test("click beats align their pulse with the recorded action", () => {
     },
     12,
   );
-  assert.ok(segment.end - segment.start <= 3.81);
+  assert.ok(segment.end - segment.start <= 4.31);
   assert.ok(Math.abs(segment.actionTimeSec - 0.55) < 0.01);
 });
 
