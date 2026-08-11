@@ -21,7 +21,8 @@
     "lint": "eslint",
     "test": "npm test --prefix worker",
     "check": "npm run lint && npm run test && npm run build",
-    "brand:logo": "python scripts/make-logo-transparent.py"
+    "brand:logo": "python scripts/make-logo-transparent.py",
+    "brand:social-card": "node worker/scripts/render-social-card.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
