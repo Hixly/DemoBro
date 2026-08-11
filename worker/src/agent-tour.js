@@ -15,6 +15,7 @@ import {
 import { executeStep } from "./record.js";
 import { ingestRepoLight } from "./generate-storyboard.js";
 import { dismissEntryBlockers } from "./dismiss-blockers.js";
+import { assessTourQuality, MIN_SUCCESSFUL_BEATS } from "./tour-quality.js";
 import {
   GROK_MAX_ATTEMPTS,
   GROK_TIMEOUT_MS,
@@ -31,7 +32,7 @@ const VIEWPORT = { width: 1920, height: 1080 };
 const SETTLE_MS = 1800;
 const STEP_TIMEOUT_MS = 8000;
 const SESSION_TIMEOUT_MS = 3 * 60 * 1000;
-const MAX_BEATS = 6;
+const MAX_BEATS = 5;
 const DOCS_BRIEF_MAX_BEATS = 3;
 const MAX_PAGES = 4;
 
@@ -581,6 +582,181 @@ function pickProductEntry(elements, claimed) {
   };
 }
 
+/**
+ * Deterministic product-loop fallback. It relies only on semantic DOM signals,
+ * never hostnames, product copy, or per-site selectors.
+ */
+export function buildDeterministicProductBeats(
+  elements,
+  { title = "the product", claimedHints = [] } = {},
+) {
+  const claimed = new Set(claimedHints);
+  const visible = (elements || []).filter((el) => el.visible);
+  const beats = [];
+  const h1 = visible.find((el) => el.tag === "h1" && el.name);
+  if (h1 && !claimed.has(selectorFor(h1))) {
+    beats.push({
+      description: "Land on hero",
+      targetHint: selectorFor(h1),
+      caption: productMeetCaption(title),
+    });
+  }
+
+  const editable = visible
+    .filter((el) => {
+      const hint = selectorFor(el);
+      const blob = `${el.name || ""} ${el.placeholder || ""} ${el.inputType || ""}`.toLowerCase();
+      return (
+        !claimed.has(hint) &&
+        (el.editable || el.tag === "textarea" || el.tag === "input") &&
+        !/password|login|sign.?in|newsletter|subscribe|search|enter your email/.test(blob)
+      );
+    })
+    .map((el) => {
+      const blob = `${el.name || ""} ${el.placeholder || ""}`.toLowerCase();
+      let score = el.tag === "textarea" ? 8 : el.contentEditable ? 7 : 4;
+      if (/prompt|message|describe|instruction|content|question|email|goal|idea/.test(blob)) score += 5;
+      return { el, score };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.el;
+
+  if (editable) {
+    beats.push({
+      description: "Type a realistic product request",
+      targetHint: selectorFor(editable),
+      caption: "Describe what you need",
+    });
+  }
+
+  const action = visible
+    .filter((el) => {
+      const hint = selectorFor(el);
+      const name = String(el.name || "").toLowerCase();
+      return (
+        !claimed.has(hint) &&
+        ["button", "a", "summary"].includes(el.tag) &&
+        /generat|create|run|analy[sz]e|submit|send|compose|build|convert|preview|process|draft|improve|check/.test(name) &&
+        !/notify|subscribe|login|sign.?in|history|settings/.test(name)
+      );
+    })
+    .map((el) => {
+      const name = String(el.name || "").toLowerCase();
+      let score = 5;
+      if (/generat/.test(name)) score = 18;
+      else if (/create|run|submit|build|convert|process|draft/.test(name)) score = 12;
+      else if (/send|compose|analy[sz]e|improve|check|preview/.test(name)) score = 8;
+      if (el.tag === "button") score += 2;
+      if (el.disabled && !editable) score -= 8;
+      return { el, score };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.el;
+
+  if (action) {
+    beats.push({
+      description: `Click ${normalizeLabel(action.name) || "primary action"}`,
+      targetHint: selectorFor(action),
+      caption: "See the result",
+    });
+  }
+  return beats;
+}
+
+function mergeUniqueBeats(primary, fallback, limit = 4) {
+  const out = [];
+  const seen = new Set();
+  for (const beat of [...(primary || []), ...(fallback || [])]) {
+    const key = String(beat.targetHint || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(beat);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function pickResultSurface(elements, claimedHints = [], plannedHints = [], beforeHints = []) {
+  const blocked = new Set([...claimedHints, ...plannedHints]);
+  const before = new Set(beforeHints);
+  const candidate = (elements || [])
+    .filter((el) => {
+      const hint = selectorFor(el);
+      return el.visible && !blocked.has(hint) && !before.has(hint);
+    })
+    .map((el) => {
+      const name = String(el.name || "").toLowerCase();
+      let score = 0;
+      if (/generated|result|output|preview|response|subject line|email body/.test(name)) score += 12;
+      if (/copy|download|export|share|save/.test(name)) score += 9;
+      if (/^h[2-3]$/.test(el.tag)) score += 3;
+      if (["button", "a"].includes(el.tag)) score += 1;
+      return { el, score };
+    })
+    .filter((item) => item.score >= 8)
+    .sort((a, b) => b.score - a.score)[0]?.el;
+  if (!candidate) return null;
+  return {
+    description: "Pause on generated result",
+    targetHint: selectorFor(candidate),
+    caption: "Review the result",
+  };
+}
+
+function isResultProducingBeat(beat) {
+  const blob = `${beat?.description || ""} ${beat?.targetHint || ""}`;
+  return /\b(generate|submit|send|create|draft|run|analy[sz]e|convert|render)\b/i.test(blob);
+}
+
+function orderProductBeats(beats) {
+  return (beats || [])
+    .map((beat, index) => {
+      const blob = `${beat.description || ""} ${beat.targetHint || ""}`;
+      let phase = 2;
+      if (/\b(land|hero|overview|meet)\b/i.test(blob)) phase = 0;
+      else if (/\b(type|enter|fill|prompt|describe|tell)\b/i.test(blob)) phase = 1;
+      else if (isResultProducingBeat(beat)) phase = 3;
+      return { beat, index, phase };
+    })
+    .sort((a, b) => a.phase - b.phase || a.index - b.index)
+    .map(({ beat }) => {
+      if (isResultProducingBeat(beat) && /^see (the )?result$/i.test(beat.caption || "")) {
+        return { ...beat, caption: "Generate the result" };
+      }
+      return beat;
+    });
+}
+
+async function waitForNewResultSurface(page, beforeHints, claimedHints, plannedHints) {
+  const deadline = Date.now() + 18_000;
+  while (Date.now() < deadline) {
+    await sleep(750);
+    const elements = await enumerateElements(page);
+    const result = pickResultSurface(elements, claimedHints, plannedHints, beforeHints);
+    if (result) return result;
+  }
+  return null;
+}
+
+async function captureStateFingerprint(page) {
+  const state = await page.evaluate(() => {
+    const visible = (el) => {
+      const r = el.getBoundingClientRect();
+      const s = getComputedStyle(el);
+      return r.width > 1 && r.height > 1 && s.display !== "none" && s.visibility !== "hidden";
+    };
+    const controls = [...document.querySelectorAll("input, textarea, select, button, [role='button']")]
+      .filter(visible)
+      .slice(0, 60)
+      .map((el) => `${el.tagName}:${el.getAttribute("aria-label") || el.textContent || ""}:${"value" in el ? el.value : ""}:${el.disabled ? "disabled" : "enabled"}`);
+    return `${location.href}|${document.body.innerText.slice(0, 5000)}|${controls.join("|")}`;
+  });
+  let hash = 2166136261;
+  for (let i = 0; i < state.length; i += 1) {
+    hash ^= state.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
 async function planPage(args) {
   const apiKey = requireApiKey();
   const model = modelName();
@@ -919,10 +1095,15 @@ export async function recordAgentTour(options) {
     const startMs = Date.now() - t0;
     const report = await executeStep(page, filmStep, i);
     const endMs = Date.now() - t0;
+    const stateFingerprint =
+      report.status === "succeeded"
+        ? await captureStateFingerprint(page).catch(() => null)
+        : null;
     reports.push({
       ...report,
       startMs,
       endMs,
+      stateFingerprint,
       caption: step.caption || report.caption || "",
     });
     const boxLog = report.box
@@ -1061,14 +1242,45 @@ export async function recordAgentTour(options) {
         console.warn(
           `[agent] planPage failed: ${err instanceof Error ? err.message : err}`,
         );
-        if (succeeded() === 0 && pageIndex === 0) {
-          await filmMinimalLanding(elements);
+        if (!cameraMode && !docsMode) {
+          const fallback = buildDeterministicProductBeats(elements, {
+            title,
+            claimedHints: [...claimed],
+          });
+          if (fallback.length >= MIN_SUCCESSFUL_BEATS - succeeded()) {
+            plan = {
+              beats: fallback,
+              nextNavigation: null,
+              done: true,
+              reason: "deterministic DOM fallback",
+            };
+            console.log(
+              `[agent] using deterministic product fallback (${fallback.length} beats)`,
+            );
+          }
+        }
+        if (!plan) {
+          if (succeeded() === 0 && pageIndex === 0) {
+            await filmMinimalLanding(elements);
+          }
           done = true;
           break;
         }
-        // Already filmed something — end gracefully with what we have.
-        done = true;
-        break;
+      }
+
+      if (!cameraMode && !docsMode && succeeded() < MIN_SUCCESSFUL_BEATS) {
+        const fallback = buildDeterministicProductBeats(elements, {
+          title,
+          claimedHints: [...claimed],
+        });
+        const before = plan.beats.length;
+        plan.beats = mergeUniqueBeats(plan.beats, fallback, 4);
+        if (plan.beats.length > before) {
+          plan.done = false;
+          console.log(
+            `[agent] deepened product plan ${before} → ${plan.beats.length} beats`,
+          );
+        }
       }
 
       if (cameraMode) {
@@ -1292,6 +1504,10 @@ export async function recordAgentTour(options) {
         if (!plan.nextNavigation) plan.done = true;
       }
 
+      if (!cameraMode && !docsMode) {
+        plan.beats = orderProductBeats(plan.beats);
+      }
+
       console.log(
         `[agent] plan page ${pageIndex}: ${plan.beats.length} beats` +
           (plan.nextNavigation
@@ -1327,6 +1543,8 @@ export async function recordAgentTour(options) {
       let leftPageEarly = false;
       for (const beat of plan.beats) {
         if (succeeded() >= beatBudget || timedOut) break;
+        const beforeElements = await enumerateElements(page);
+        const beforeHints = beforeElements.map(selectorFor);
         const beforeUrl = pathKey(page.url());
         await filmOne({
           id: `p${pageIndex}-b${reports.length}`,
@@ -1342,6 +1560,28 @@ export async function recordAgentTour(options) {
           );
           leftPageEarly = true;
           break;
+        }
+
+        const latest = reports[reports.length - 1];
+        if (
+          latest?.status === "succeeded" &&
+          latest.stepKind === "click" &&
+          isResultProducingBeat(beat)
+        ) {
+          await hydrateSettle(page);
+          const resultBeat = await waitForNewResultSurface(
+            page,
+            beforeHints,
+            [...claimed],
+            plan.beats.map((item) => item.targetHint),
+          );
+          if (resultBeat) {
+            console.log(`[agent] revealed result surface → ${resultBeat.targetHint}`);
+            await filmOne({
+              id: `p${pageIndex}-result-${reports.length}`,
+              ...resultBeat,
+            });
+          }
         }
       }
 
@@ -1424,6 +1664,47 @@ export async function recordAgentTour(options) {
         break;
       }
       pageIndex += 1;
+    }
+
+    // Same-attempt recovery: if the model stopped early, discover the remaining
+    // product loop directly from the current DOM before ending the recording.
+    let quality = assessTourQuality({ steps: reports });
+    if (!quality.ok && sameOrigin(page.url(), origin)) {
+      await hydrateSettle(page);
+      const recoveryElements = await enumerateElements(page);
+      const recovery = buildDeterministicProductBeats(recoveryElements, {
+        title,
+        claimedHints: [...claimed],
+      });
+      console.log(
+        `[agent] quality recovery: ${quality.reasons.join("; ")} (${recovery.length} candidates)`,
+      );
+      for (const beat of recovery) {
+        if (timedOut || Date.now() - t0 >= SESSION_TIMEOUT_MS - 8_000) break;
+        quality = assessTourQuality({ steps: reports });
+        if (quality.successfulBeats >= MIN_SUCCESSFUL_BEATS && quality.interactions > 0) break;
+        await filmOne({
+          id: `recovery-${reports.length}`,
+          description: beat.description,
+          targetHint: beat.targetHint,
+          caption: beat.caption || "",
+        });
+        await sleep(350);
+      }
+    }
+
+    quality = assessTourQuality({ steps: reports });
+    if (
+      quality.successfulBeats >= MIN_SUCCESSFUL_BEATS &&
+      quality.interactions > 0 &&
+      quality.distinctStates >= 2 &&
+      quality.bodyDurationMs < 12_000
+    ) {
+      const holdMs = Math.min(6_000, 12_000 - quality.bodyDurationMs + 250);
+      console.log(`[agent] holding final state ${holdMs}ms for body-duration floor`);
+      await sleep(holdMs);
+      const last = [...reports].reverse().find((r) => r.status === "succeeded");
+      if (last) last.endMs += holdMs;
     }
 
     await sleep(SETTLE_MS);

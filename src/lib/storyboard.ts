@@ -27,8 +27,8 @@ const STORYBOARD_SCHEMA = {
   properties: {
     steps: {
       type: "array",
-      minItems: 5,
-      maxItems: 6,
+      minItems: 4,
+      maxItems: 5,
       items: {
         type: "object",
         additionalProperties: false,
@@ -112,9 +112,11 @@ UI that appears only after deep flows (post-login, post-submit results) is unkno
 
 ${elementLines || "(no visible interactive elements — plan a gentle visit/scroll overview using body)"}
 
-Propose 5-6 demo steps a first-time visitor can perform from this landing state. Rules:
+Propose 4-5 demo steps that form one coherent first-time-user story. Rules:
 - Each step is ONE concrete user action a browser can perform.
-- Prefer 5 or 6 steps — enough to fill a ~20–25s tour, not a thin 3-click skim.
+- Prefer fewer meaningful beats over filler or repeated nearby controls.
+- The sequence should read as setup, primary value, proof, and conclusion.
+- Prefer four strong beats; use a fifth only for a distinct result or feature.
 - Step 1 should land on / pause on the hero or primary landing view.
 - Prefer real controls from the element list above (use their hint= values).
 - Order steps sensibly for a first-time visitor (scan hero → primary CTA → secondary).
@@ -151,8 +153,8 @@ function parseSteps(content: string): Array<{ description: string; targetHint: s
     }))
     .filter((step) => step.description && step.targetHint);
 
-  if (steps.length < 5 || steps.length > 6) {
-    throw new Error(`Grok returned ${steps.length} steps; expected 5–6.`);
+  if (steps.length < 4 || steps.length > 5) {
+    throw new Error(`Grok returned ${steps.length} steps; expected 4-5.`);
   }
   return steps;
 }

@@ -12,6 +12,19 @@ import { RENDER_TIMEOUT_MS } from "./job-utils.js";
  * smaller — at 1080p that gets the encoder OOM-killed mid-render.
  */
 const X264_THREADS = process.env.DEMOBRO_FFMPEG_THREADS || "1";
+const X264_CRF = process.env.DEMOBRO_X264_CRF || "18";
+const X264_PRESET = process.env.DEMOBRO_X264_PRESET || "medium";
+
+/** Explicit high-quality settings for small text and hard UI edges. */
+const VIDEO_ENCODE_ARGS = [
+  "-c:v", "libx264",
+  "-preset", X264_PRESET,
+  "-crf", X264_CRF,
+  "-threads", X264_THREADS,
+  "-pix_fmt", "yuv420p",
+  "-r", "30",
+  "-fps_mode", "cfr",
+];
 
 const TITLE_SECS = 2.8;
 const OUTRO_SECS = 3.0;
@@ -198,6 +211,8 @@ export function planSegments(timeline, totalDurationSec) {
       step.box ?? null,
       step.actionPoint ?? null,
       contentBounds,
+      step.stepKind ?? "pause",
+      step.description ?? "",
     );
     segments.push({
       start,
@@ -245,17 +260,13 @@ const ZOOM_EASE_SEC = 0.28;
  * therefore stay essentially full-frame and actions punch only enough to draw
  * the eye to the target.
  */
-const ZOOM_MAX = 2.35;
-/**
- * Fill-zoom ceilings. Centered app columns (e.g. max-width hero on a 1920
- * canvas) leave huge empty side gutters — we zoom just enough to put the real
- * UI edge-to-edge, with a little crop into chrome if the form is inset.
- */
-const PAUSE_ZOOM_MAX = 2.05;
-const ACTION_ZOOM_MAX = 2.35;
-const PAUSE_ZOOM_MIN = 1.04;
+const ZOOM_MAX = 1.2;
+/** Conservative ceilings: composition first, zoom only as action emphasis. */
+const PAUSE_ZOOM_MAX = 1.03;
+const ACTION_ZOOM_MAX = 1.2;
+const PAUSE_ZOOM_MIN = 1.0;
 /** Breathing room kept around an action target, in source pixels. */
-const ZOOM_PAD_PX = 160;
+const ZOOM_PAD_PX = 240;
 const SPOTLIGHT_PAD = 48;
 
 function normalizeContentBounds(raw) {
@@ -303,7 +314,13 @@ function estimateContentFromBoxes(boxes) {
 }
 
 /** Null out near-full-frame boxes; expand tiny labels into a readable card window. */
-function sanitizeTarget(box, actionPoint, contentBounds = null) {
+function sanitizeTarget(
+  box,
+  actionPoint,
+  contentBounds = null,
+  stepKind = "pause",
+  description = "",
+) {
   if (
     !box ||
     !Number.isFinite(box.w) ||
@@ -336,8 +353,12 @@ function sanitizeTarget(box, actionPoint, contentBounds = null) {
     const contentCy = contentBounds
       ? contentBounds.y + contentBounds.h / 2
       : H / 2;
-    // Keep the tiny control inside the expanded window, but pull toward content.
-    const cx = ap.x * 0.55 + contentCx * 0.45;
+    // Passive result shots commonly resolve to a small Copy/Save control at
+    // the edge of a much larger result card. Keep their framing centered on
+    // the product column; the action point may remain on the real control.
+    const passiveResult =
+      stepKind === "pause" && /result|output|preview|response|draft/i.test(description);
+    const cx = passiveResult ? contentCx : ap.x * 0.55 + contentCx * 0.45;
     const cy = ap.y * 0.55 + contentCy * 0.45;
     b = {
       x: Math.max(0, Math.min(W - targetW, cx - targetW / 2)),
@@ -432,53 +453,28 @@ export function shortenCaption(description) {
  * - Punch-ins: keep the target comfortably in view, but bias toward content CoM
  *   and clamp so we never slam into a one-sided dead edge.
  */
-function computeFramedZoom(box, contentBounds, stepKind = "pause") {
+export function computeFramedZoom(box, contentBounds, stepKind = "pause") {
   const content =
     normalizeContentBounds(contentBounds) || { x: 0, y: 0, w: W, h: H };
 
   const isAction = stepKind === "click" || stepKind === "type";
   const kindCeiling = isAction ? ACTION_ZOOM_MAX : PAUSE_ZOOM_MAX;
 
-  // Slack = empty margin outside measured chrome. Allow a little crop into
-  // chrome so inset forms (narrower than the header) can still fill the shot.
+  // Only proven empty margins may be cropped. A narrow product column is not
+  // permission to enlarge the UI edge-to-edge and discard page context.
   const slackX = Math.max(0, Math.min(content.x, W - (content.x + content.w)));
   const slackY = Math.max(0, Math.min(content.y, H - (content.y + content.h)));
-  const cropIntoX = Math.min(56, slackX * 0.12);
-  const cropIntoY = Math.min(40, slackY * 0.12);
-  const safeZoomX = Math.max(
+  const safeZoom = Math.max(
     1,
-    W / Math.max(content.w - 2 * cropIntoX, content.w * 0.9, 1),
-  );
-  const safeZoomY = Math.max(
-    1,
-    H / Math.max(content.h - 2 * cropIntoY, content.h * 0.9, 1),
+    Math.min(
+      W / Math.max(W - 2 * slackX, 1),
+      H / Math.max(H - 2 * slackY, 1),
+    ),
   );
 
-  // Fill zoom: put the app column edge-to-edge when the page is a narrow
-  // centered card on a wide canvas (the common SaaS landing layout). A
-  // full-height column still has empty side gutters — don't let fillY (≈1)
-  // suppress the horizontal fill.
-  const narrowX = content.w < W * 0.82;
-  const narrowY = content.h < H * 0.78;
-  const fillX = W / Math.max(content.w * 1.02, 1);
-  const fillY = H / Math.max(content.h * 1.06, 1);
-  let fillZoom = 1;
-  if (narrowX && narrowY) fillZoom = Math.min(fillX, fillY);
-  else if (narrowX) fillZoom = fillX;
-  else if (narrowY) fillZoom = fillY;
-  fillZoom = Math.max(1, fillZoom);
-  if (content.w >= W * 0.92) fillZoom = Math.min(fillZoom, 1.06);
-
-  // Only the axis we're filling limits safe zoom. A full-height column has
-  // ~0 vertical slack, which must not block horizontal fill.
-  const safeZoom =
-    narrowX && !narrowY
-      ? safeZoomX
-      : narrowY && !narrowX
-        ? safeZoomY
-        : Math.min(safeZoomX, safeZoomY);
-
-  let zoomPeak = Math.max(isAction ? 1 : PAUSE_ZOOM_MIN, fillZoom);
+  // Pause shots stay full-frame. Cursor, spotlight, and a restrained action
+  // zoom direct attention without making the image soft or the camera restless.
+  let zoomPeak = isAction ? 1.08 : PAUSE_ZOOM_MIN;
 
   if (isAction && box && Number.isFinite(box.x) && box.w > 0 && box.h > 0) {
     const need = Math.min(
@@ -486,8 +482,8 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
       H / Math.max(box.h + ZOOM_PAD_PX * 2, 1),
     );
     if (Number.isFinite(need) && need > 1) {
-      // Don't let a tiny target drag us past a balanced fill of the page.
-      zoomPeak = Math.max(zoomPeak, Math.min(need, fillZoom * 1.12));
+      // A tiny control never earns a large digital crop.
+      zoomPeak = Math.max(zoomPeak, Math.min(need, ACTION_ZOOM_MAX));
     }
   }
 
@@ -499,13 +495,6 @@ function computeFramedZoom(box, contentBounds, stepKind = "pause") {
   if (isAction && box && box.w > 0 && box.h > 0) {
     cy = box.y + box.h / 2;
   }
-  // Full-bleed-tall columns: pin the crop to the top so the header/logo stay
-  // on screen instead of being shaved equally with the footer.
-  if (content.y <= 24 && content.h >= H * 0.7) {
-    const winH = H / Math.max(zoomPeak, 1);
-    cy = Math.min(cy, content.y + winH / 2);
-  }
-
   const placed = placeZoomCenter({ cx, cy, zoom: zoomPeak, box, lockX: true });
   return {
     zoomPeak: placed.zoom,
@@ -706,7 +695,9 @@ async function prepareCaptionPng(seg, outPath) {
   // on the opposite side of the frame from the target.
   const box = seg.box;
   const targetLow = box && box.y + box.h / 2 > H * 0.58;
-  const position = targetLow ? "top" : "bottom";
+  const passiveResult =
+    seg.stepKind === "pause" && /result|output|preview|response|draft/i.test(seg.description || "");
+  const position = targetLow || passiveResult ? "top" : "bottom";
   await renderCardPng(outPath, "caption", { text: short, position }, null);
   console.log(`[render] caption="${short}" ${position} third png`);
   return short;
@@ -728,8 +719,17 @@ function captionOverlayGraph(zoomedLabel, captionInputIdx, outDur, outLabel) {
   );
 }
 
-async function pngToFadedClip(pngPath, outPath, durationSec) {
+async function pngToFadedClip(
+  pngPath,
+  outPath,
+  durationSec,
+  { fadeIn = true, fadeOut = true } = {},
+) {
   const fadeOutStart = Math.max(0, durationSec - FADE_OUT);
+  const fades = [
+    fadeIn ? `fade=t=in:st=0:d=${FADE_IN}` : "",
+    fadeOut ? `fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${FADE_OUT}` : "",
+  ].filter(Boolean);
   await run("ffmpeg", [
     "-y",
     "-loop",
@@ -739,15 +739,13 @@ async function pngToFadedClip(pngPath, outPath, durationSec) {
     "-t",
     durationSec.toFixed(3),
     "-vf",
-    `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0xFAF9F6,fade=t=in:st=0:d=${FADE_IN},fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${FADE_OUT},format=yuv420p`,
-    "-r",
-    "30",
-    "-c:v",
-    "libx264",
-    "-threads",
-    X264_THREADS,
-    "-pix_fmt",
-    "yuv420p",
+    [
+      `scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos`,
+      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0xFAF9F6`,
+      ...fades,
+      "format=yuv420p",
+    ].join(","),
+    ...VIDEO_ENCODE_ARGS,
     outPath,
   ]);
 }
@@ -845,7 +843,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const spotUntil = pulse
     ? Math.min(pulse.t0 + 0.12, 0.7)
     : Math.min(0.55, outDur * 0.28);
-  const spotlight = isWideBottomCta(seg.box)
+  const spotlight = seg.stepKind === "pause" || isWideBottomCta(seg.box)
     ? ""
     : buildSpotlightFilter(seg.box ?? null, spotUntil);
   const vignette = buildVignetteFilter(seg.box ?? null);
@@ -859,15 +857,16 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const hasCaption = Boolean(captionText);
 
   const pre = [
-    `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
+    `scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos`,
     `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2`,
     `setpts=PTS/${speed}`,
     "fps=30",
     spotlight,
   ].filter(Boolean);
   const zoomChain = [zoom, vignette].filter(Boolean).join(",");
-  const endFades =
-    `fade=t=in:st=0:d=0.25,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25,format=yuv420p`;
+  // Body beats use clean cuts. Fading every extracted segment to black caused
+  // two-frame black flashes at every edit boundary.
+  const endFades = "format=yuv420p";
 
   if (!pulse && !hasCaption) {
     await run("ffmpeg", [
@@ -881,16 +880,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-vf",
       [...pre, zoomChain, endFades].filter(Boolean).join(","),
       "-an",
-      "-c:v",
-      "libx264",
-      "-threads",
-      X264_THREADS,
-      "-pix_fmt",
-      "yuv420p",
-      "-r",
-      "30",
-      "-fps_mode",
-      "cfr",
+      ...VIDEO_ENCODE_ARGS,
       videoOnly,
     ]);
   } else if (!pulse && hasCaption) {
@@ -917,16 +907,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-map",
       "[vout]",
       "-an",
-      "-c:v",
-      "libx264",
-      "-threads",
-      X264_THREADS,
-      "-pix_fmt",
-      "yuv420p",
-      "-r",
-      "30",
-      "-fps_mode",
-      "cfr",
+      ...VIDEO_ENCODE_ARGS,
       "-t",
       outDurS,
       videoOnly,
@@ -998,16 +979,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
       "-map",
       "[vout]",
       "-an",
-      "-c:v",
-      "libx264",
-      "-threads",
-      X264_THREADS,
-      "-pix_fmt",
-      "yuv420p",
-      "-r",
-      "30",
-      "-fps_mode",
-      "cfr",
+      ...VIDEO_ENCODE_ARGS,
       "-t",
       outDurS,
       videoOnly,
@@ -1086,16 +1058,8 @@ async function concatCuts(inputs, outPath) {
     "-i",
     listPath,
     "-c:v",
-    "libx264",
-    "-threads",
-    X264_THREADS,
-    "-pix_fmt",
-    "yuv420p",
-    "-r",
-    "30",
-    "-fps_mode",
-    "cfr",
-    ...(hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : ["-an"]),
+    "copy",
+    ...(hasAudio ? ["-c:a", "copy"] : ["-an"]),
     "-movflags",
     "+faststart",
     outPath,
@@ -1150,21 +1114,7 @@ async function concatWithXfade(inputs, outPath, fadeSec = XFADE) {
   } else {
     args.push("-an");
   }
-  args.push(
-    "-c:v",
-    "libx264",
-    "-threads",
-    X264_THREADS,
-    "-pix_fmt",
-    "yuv420p",
-    "-r",
-    "30",
-    "-fps_mode",
-    "cfr",
-    "-movflags",
-    "+faststart",
-    outPath,
-  );
+  args.push(...VIDEO_ENCODE_ARGS, "-movflags", "+faststart", outPath);
   await run("ffmpeg", args);
 }
 
@@ -1252,12 +1202,19 @@ export async function renderDemo(opts) {
 
     const titleSilent = path.join(tmp, "title-a.mp4");
     const outroSilent = path.join(tmp, "outro-a.mp4");
-    await pngToFadedClip(titlePng, titlePath, TITLE_SECS);
-    await pngToFadedClip(outroPng, outroPath, OUTRO_SECS);
+    await pngToFadedClip(titlePng, titlePath, TITLE_SECS, {
+      fadeIn: true,
+      fadeOut: false,
+    });
+    await pngToFadedClip(outroPng, outroPath, OUTRO_SECS, {
+      fadeIn: false,
+      fadeOut: true,
+    });
     await ensureSilentAudio(titlePath, titleSilent, TITLE_SECS);
     await ensureSilentAudio(outroPath, outroSilent, OUTRO_SECS);
 
     const clipPaths = [];
+    const failedSegments = [];
     for (let i = 0; i < segments.length; i += 1) {
       const clip = path.join(tmp, `clip-${i}.mp4`);
       try {
@@ -1270,7 +1227,13 @@ export async function renderDemo(opts) {
           `[render] beat ${i + 1}/${segments.length} failed, dropping it: ` +
             `${err instanceof Error ? err.message : err}`,
         );
+        failedSegments.push(i);
       }
+    }
+    if (opts.minBodySegments && clipPaths.length < opts.minBodySegments) {
+      throw new Error(
+        `Rendered only ${clipPaths.length} body beats; ${opts.minBodySegments} are required.`,
+      );
     }
     if (!clipPaths.length && segments.length) {
       throw new Error("Every beat failed to render.");
@@ -1301,6 +1264,8 @@ export async function renderDemo(opts) {
       outputPath: opts.outputPath,
       durationSec: finalDuration,
       segments: segments.length,
+      renderedSegments: clipPaths.length,
+      failedSegments,
       speed,
       logoPath,
       sourceFps,

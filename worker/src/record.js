@@ -476,6 +476,19 @@ export async function executeStep(page, step, index) {
     const desc = step.description.toLowerCase();
     const tag = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
     const stepKind = classifyStepKind(step, tag, desc);
+    if (
+      stepKind === "type" ||
+      stepKind === "click" ||
+      (stepKind === "pause" && /result|output|preview|response/.test(desc))
+    ) {
+      await locator
+        .evaluate((el) =>
+          el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }),
+        )
+        .catch(() => {});
+      await sleep(250);
+      await moveMouseVisibly(page, locator);
+    }
     const meta = await captureTargetMeta(locator);
 
     if (stepKind === "pause") {
@@ -506,6 +519,29 @@ export async function executeStep(page, step, index) {
         stepKind,
         status: "succeeded",
       });
+    }
+
+    const alreadySelected = await locator
+      .evaluate((el) => {
+        const state = String(el.getAttribute("data-state") || "").toLowerCase();
+        const classes = String(el.className || "").toLowerCase();
+        return (
+          el.getAttribute("aria-pressed") === "true" ||
+          el.getAttribute("aria-selected") === "true" ||
+          el.matches(":checked") ||
+          /^(active|checked|on|selected)$/.test(state) ||
+          /(^|\s)(active|selected)(\s|$)/.test(classes)
+        );
+      })
+      .catch(() => false);
+    if (alreadySelected) {
+      return {
+        ...base,
+        ...meta,
+        stepKind,
+        status: "skipped",
+        reason: "control was already selected; no visible state change",
+      };
     }
 
     // Prefer force when a sheet/modal may intercept (common after "view details").
