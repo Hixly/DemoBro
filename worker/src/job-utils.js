@@ -248,6 +248,9 @@ export function toUserFacingError(err) {
   if (/empty storyboard/i.test(msg)) {
     return "Nothing to film for that job.";
   }
+  if (/tour quality check failed/i.test(msg)) {
+    return "We opened your project but couldn't capture a complete interactive demo. Nothing was published. Please try again, or send us this run so we can investigate.";
+  }
   if (/rendered video quality check failed/i.test(msg)) {
     return "The finished video did not pass DemoBro's quality check. Please try again.";
   }
