@@ -168,7 +168,13 @@
 }
 
 .productionNote {
-  margin: calc(var(--space-beta-md) * -1) 0 0;
+  position: relative;
+  z-index: 2;
+  width: max-content;
+  max-width: 100%;
+  margin: var(--space-beta-md) 0 0;
+  padding: var(--space-beta-xs) var(--space-beta-md);
+  background: var(--color-beta-paper);
   font-family: var(--font-beta-mono), ui-monospace, monospace;
   font-size: var(--text-beta-small);
   color: var(--color-beta-muted);
@@ -446,7 +452,7 @@
   }
 
   .productionNote {
-    margin-top: 0;
+    margin-top: var(--space-beta-md);
   }
 
   .formHalf {
