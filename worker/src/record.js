@@ -57,6 +57,7 @@ function extractTypedValue(description) {
  *   reason?: string,
  *   startMs?: number,
  *   endMs?: number,
+ *   actionOffsetMs?: number | null,
  *   box?: TargetBox | null,
  *   actionPoint?: ActionPoint | null,
  *   contentBounds?: TargetBox | null,
@@ -433,6 +434,7 @@ async function safeGoto(page, url) {
  * @returns {Promise<StepReport>}
  */
 export async function executeStep(page, step, index) {
+  const stepStartedAt = Date.now();
   const base = {
     index: index + 1,
     description: step.description,
@@ -440,6 +442,7 @@ export async function executeStep(page, step, index) {
     box: null,
     actionPoint: null,
     contentBounds: null,
+    actionOffsetMs: null,
     stepKind: /** @type {StepKind} */ ("pause"),
   };
 
@@ -463,9 +466,15 @@ export async function executeStep(page, step, index) {
     // with a[href="/app"] must fall through to click — otherwise we no-op on
     // the current page and the agent never reaches the product.
     if (looksLikeUrl(step.targetHint)) {
+      const actionOffsetMs = Date.now() - stepStartedAt;
       await safeGoto(page, step.targetHint);
       await sleep(SETTLE_MS + 1_000);
-      return finishOk({ ...base, stepKind: "nav", status: "succeeded" });
+      return finishOk({
+        ...base,
+        actionOffsetMs,
+        stepKind: "nav",
+        status: "succeeded",
+      });
     }
 
     const locator = await locatorForHint(page, step.targetHint);
@@ -506,6 +515,7 @@ export async function executeStep(page, step, index) {
     // enables a Generate button that a click step films right after).
     if (stepKind === "type") {
       const value = extractTypedValue(step.description) || DEFAULT_INPUT_TEXT;
+      const actionOffsetMs = Date.now() - stepStartedAt;
       await locator.click({ timeout: STEP_TIMEOUT_MS }).catch(() => {});
       try {
         await locator.fill(value, { timeout: STEP_TIMEOUT_MS });
@@ -516,6 +526,7 @@ export async function executeStep(page, step, index) {
       return finishOk({
         ...base,
         ...meta,
+        actionOffsetMs,
         stepKind,
         status: "succeeded",
       });
@@ -545,6 +556,7 @@ export async function executeStep(page, step, index) {
     }
 
     // Prefer force when a sheet/modal may intercept (common after "view details").
+    const actionOffsetMs = Date.now() - stepStartedAt;
     try {
       await locator.click({ timeout: STEP_TIMEOUT_MS });
     } catch {
@@ -583,6 +595,7 @@ export async function executeStep(page, step, index) {
     return finishOk({
       ...base,
       ...meta,
+      actionOffsetMs,
       stepKind,
       status: "succeeded",
     });
