@@ -1,4 +1,5 @@
 /* Hallmark · macrostructure: Split Studio · genre: playful · theme: DemoBro custom · enrichment: tier-A CSS registration rig · contrast: pass (40–41) · mobile: pass (34, 49, 50–57) */
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 .page {
   min-height: 100svh;
   display: grid;
@@ -186,9 +187,15 @@
   padding: var(--space-beta-2xl) 0;
 }
 
+.accessStack {
+  width: min(100%, 29rem);
+  display: grid;
+  gap: var(--space-beta-lg);
+}
+
 .card {
   position: relative;
-  width: min(100%, 29rem);
+  width: 100%;
   padding: clamp(var(--space-beta-lg), 5vw, var(--space-beta-2xl));
   border: calc(var(--rule-beta) + 0.5px) solid var(--color-beta-ink);
   border-radius: var(--radius-beta-card);
@@ -380,6 +387,97 @@
   color: var(--color-beta-success);
 }
 
+.eventTicket {
+  position: relative;
+  width: calc(100% - var(--space-beta-lg));
+  justify-self: end;
+  padding: var(--space-beta-lg);
+  border: var(--rule-beta) solid var(--color-beta-ink);
+  border-radius: var(--radius-beta-input);
+  background: var(--color-beta-paper);
+  color: var(--color-beta-ink);
+  box-shadow: 5px 6px 0 var(--color-beta-blue-soft);
+  transform: rotate(-0.55deg);
+}
+
+.eventTicket::before {
+  content: "";
+  position: absolute;
+  inset-inline: var(--space-beta-md);
+  top: calc(var(--rule-beta) * -1);
+  border-top: var(--rule-beta) dashed var(--color-beta-blue);
+}
+
+.eventLabel {
+  margin: 0 0 var(--space-beta-sm);
+  font-family: var(--font-beta-mono), ui-monospace, monospace;
+  font-size: var(--text-beta-small);
+  color: var(--color-beta-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.eventTicket h2 {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 1.35rem;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+
+.eventCopy {
+  margin: var(--space-beta-md) 0;
+  max-width: 48ch;
+  color: var(--color-beta-muted);
+  font-size: var(--text-beta-body);
+  line-height: 1.5;
+}
+
+.eventLink {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-beta-md);
+  width: 100%;
+  border-top: var(--rule-beta) solid var(--color-beta-ink);
+  color: var(--color-beta-ink);
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color var(--dur-beta-fast) var(--ease-beta-out),
+    transform var(--dur-beta-fast) var(--ease-beta-out);
+}
+
+.eventLink span {
+  color: var(--color-beta-blue);
+  font-size: 1.35rem;
+  transition: transform var(--dur-beta-fast) var(--ease-beta-out);
+}
+
+@media (hover: hover) {
+  .eventLink:hover {
+    color: var(--color-beta-focus);
+  }
+
+  .eventLink:hover span {
+    transform: translateX(var(--space-beta-xs));
+  }
+}
+
+.eventLink:focus-visible {
+  outline: var(--rule-beta) solid var(--color-beta-focus);
+  outline-offset: 3px;
+}
+
+.eventLink:active {
+  transform: translateY(1px);
+}
+
 @keyframes cardArrive {
   from { opacity: 0; transform: translate(1.25rem, 0.75rem) rotate(2deg); }
   to { opacity: 1; transform: translate(0, 0) rotate(0.75deg); }
@@ -473,6 +571,12 @@
     font-size: clamp(2.45rem, 13vw, 3.6rem);
   }
 
+  .productionNote {
+    width: auto;
+    max-width: calc(100vw - (var(--space-beta-md) * 2));
+    padding-inline: var(--space-beta-sm);
+  }
+
   .reelBadge {
     width: clamp(3rem, 15vw, 4rem);
   }
@@ -480,6 +584,20 @@
   .card {
     padding: var(--space-beta-lg);
     box-shadow: 6px 7px 0 var(--color-beta-blue);
+  }
+
+  .accessStack {
+    gap: var(--space-beta-md);
+  }
+
+  .eventTicket {
+    width: 100%;
+    padding: var(--space-beta-md);
+    transform: none;
+  }
+
+  .eventLink {
+    font-size: 0.92rem;
   }
 }
 
@@ -513,7 +631,9 @@
 
   .input,
   .button,
-  .buttonMark {
+  .buttonMark,
+  .eventLink,
+  .eventLink span {
     transition-duration: var(--dur-beta-fast);
   }
 }

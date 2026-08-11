@@ -74,54 +74,70 @@ export function BetaGate() {
         </div>
 
         <div className={styles.formHalf}>
-          <div className={styles.card} data-state={state}>
-            <span className={styles.tape} aria-hidden="true" />
-            <p className={styles.eyebrow}>DemoBro private beta</p>
-            <h1 id="beta-title">The camera crew is almost ready.</h1>
-            <p className={styles.intro}>
-              Enter today’s access key to test the one-shot micro demo studio.
-            </p>
-
-            <form onSubmit={submit} noValidate>
-              <label className={styles.label} htmlFor="beta-access-key">
-                Access key
-              </label>
-              <input
-                id="beta-access-key"
-                className={styles.input}
-                type="password"
-                value={accessKey}
-                onChange={(event) => {
-                  setAccessKey(event.target.value);
-                  if (state === "error") {
-                    setState("idle");
-                    setMessage("Invited tester? Your key was included with your invitation.");
-                  }
-                }}
-                autoComplete="current-password"
-                aria-invalid={state === "error"}
-                aria-describedby="beta-access-help"
-                disabled={state === "loading" || state === "success"}
-                placeholder="Today’s key"
-                autoFocus
-              />
-              <button
-                className={styles.button}
-                type="submit"
-                disabled={state === "loading" || state === "success"}
-                data-state={state}
-              >
-                <span>{state === "loading" ? "Checking the list…" : state === "success" ? "Rolling camera…" : "Enter the studio"}</span>
-                <span className={styles.buttonMark} aria-hidden="true">▶</span>
-              </button>
-              <p
-                id="beta-access-help"
-                className={styles.helper}
-                role={state === "error" ? "alert" : "status"}
-              >
-                {message}
+          <div className={styles.accessStack}>
+            <div className={styles.card} data-state={state}>
+              <span className={styles.tape} aria-hidden="true" />
+              <p className={styles.eyebrow}>DemoBro private beta</p>
+              <h1 id="beta-title">The camera crew is almost ready.</h1>
+              <p className={styles.intro}>
+                Enter today’s access key to test the one-shot micro demo studio.
               </p>
-            </form>
+
+              <form onSubmit={submit} noValidate>
+                <label className={styles.label} htmlFor="beta-access-key">
+                  Access key
+                </label>
+                <input
+                  id="beta-access-key"
+                  className={styles.input}
+                  type="password"
+                  value={accessKey}
+                  onChange={(event) => {
+                    setAccessKey(event.target.value);
+                    if (state === "error") {
+                      setState("idle");
+                      setMessage("Invited tester? Your key was included with your invitation.");
+                    }
+                  }}
+                  autoComplete="current-password"
+                  aria-invalid={state === "error"}
+                  aria-describedby="beta-access-help"
+                  disabled={state === "loading" || state === "success"}
+                  placeholder="Today’s key"
+                  autoFocus
+                />
+                <button
+                  className={styles.button}
+                  type="submit"
+                  disabled={state === "loading" || state === "success"}
+                  data-state={state}
+                >
+                  <span>{state === "loading" ? "Checking the list…" : state === "success" ? "Rolling camera…" : "Enter the studio"}</span>
+                  <span className={styles.buttonMark} aria-hidden="true">▶</span>
+                </button>
+                <p
+                  id="beta-access-help"
+                  className={styles.helper}
+                  role={state === "error" ? "alert" : "status"}
+                >
+                  {message}
+                </p>
+              </form>
+            </div>
+
+            <aside className={styles.eventTicket} aria-labelledby="hackyard-invite-title">
+              <p className={styles.eventLabel}>HackYard · Event 01</p>
+              <h2 id="hackyard-invite-title">No key? Join the first Yard.</h2>
+              <p className={styles.eventCopy}>
+                Full DemoBro access opens when HackYard’s first event goes live.
+                Create your account, build a project, then make its demo from the
+                submission page.
+              </p>
+              <a className={styles.eventLink} href="https://hackyard.tech/login">
+                Create a HackYard account
+                <span aria-hidden="true">→</span>
+              </a>
+            </aside>
           </div>
         </div>
       </section>
