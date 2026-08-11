@@ -1,7 +1,7 @@
 {
   "name": "demobro",
   "version": "0.1.0",
-  "description": "Generate polished micro-demo videos from a public web app and GitHub repository.",
+  "description": "Generate polished micro-demo videos from a public web app, with optional GitHub context.",
   "private": true,
   "license": "MIT",
   "homepage": "https://www.demobro.video",

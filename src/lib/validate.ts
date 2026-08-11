@@ -43,7 +43,7 @@ export function validateLiveUrl(value: string): FieldError {
 
 export function validateGithubUrl(value: string): FieldError {
   const trimmed = value.trim();
-  if (!trimmed) return "Enter the GitHub repo URL.";
+  if (!trimmed) return null;
 
   let url: URL;
   try {

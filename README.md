@@ -2,7 +2,7 @@
   <img src="public/brand/demobro-logo.png" alt="DemoBro play-button logo" width="96" />
   <h1>DemoBro</h1>
   <p><strong>Drop your links. We film the tour.</strong></p>
-  <p>Generate a polished micro-demo video from a public web app and its GitHub repository—without manually recording your screen.</p>
+  <p>Generate a polished micro-demo video from a public web app—without manually recording your screen. A public GitHub repository is optional and adds richer product context.</p>
 
   [![DemoBro](https://img.shields.io/badge/try-DemoBro-2bacfc)](https://www.demobro.video)
   [![CI](https://github.com/Hixly/DemoBro/actions/workflows/ci.yml/badge.svg)](https://github.com/Hixly/DemoBro/actions/workflows/ci.yml)
@@ -13,7 +13,7 @@
 
 ## What DemoBro does
 
-DemoBro turns two links—a deployed web app and a public GitHub repository—into a short, branded MP4. It reads the repository for product context, explores the live interface with a browser worker, films meaningful interactions, and renders the result with captions, cursor treatment, transitions, and title/outro cards.
+DemoBro turns a deployed web app into a short, branded MP4. It infers the project's title, description, and product context from the live page; when an optional public GitHub repository is provided, its README, language, and package metadata enrich the story. A browser worker then explores the live interface, films meaningful interactions, and renders the result with captions, cursor treatment, transitions, and title/outro cards.
 
 The project was born from [HackYard](https://hackyard.tech)'s **No Accounts** event theme. Its goal is to give makers a fast way to create submission-ready walkthroughs without requiring an account or a manual screen-recording session.
 
@@ -34,7 +34,7 @@ The renderer then samples the filmed frames to remove near-identical passive sho
 
 ```mermaid
 flowchart LR
-    U["Live URL + GitHub repo"] --> W["Next.js web app"]
+    U["Live URL + optional GitHub repo"] --> W["Next.js web app"]
     W --> Q["Supabase jobs queue"]
     Q --> B["Playwright browser worker"]
     B --> G["Narrative planner + DOM fallback"]

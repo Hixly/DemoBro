@@ -17,7 +17,7 @@ import {
   type FieldError,
 } from "@/lib/validate";
 
-type Stage = "input" | "reading" | "fallback" | "working" | "ready";
+type Stage = "input" | "reading" | "working" | "ready";
 
 type ProjectMeta = {
   title: string;
@@ -44,8 +44,6 @@ export function InputForm() {
   const [liveTouched, setLiveTouched] = useState(false);
   const [githubTouched, setGithubTouched] = useState(false);
   const [stage, setStage] = useState<Stage>("input");
-  const [manualTitle, setManualTitle] = useState("");
-  const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [projectMeta, setProjectMeta] = useState<ProjectMeta | null>(null);
   const [job, setJob] = useState<JobPoll | null>(null);
@@ -162,11 +160,14 @@ export function InputForm() {
    * Enqueue an agent job — the worker discovers the tour while filming.
    * No pre-baked storyboard editor (that would fake a complete plan).
    */
-  async function startAgentJob(meta: {
-    title: string;
-    description: string;
-    badges: string[];
-  }) {
+  async function startAgentJob(
+    meta: {
+      title: string;
+      description: string;
+      badges: string[];
+    },
+    acceptedRepoUrl = "",
+  ) {
     setError(null);
     setStage("working");
     setProjectMeta(meta);
@@ -176,7 +177,7 @@ export function InputForm() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         liveUrl: liveUrl.trim(),
-        githubUrl: githubUrl.trim(),
+        githubUrl: acceptedRepoUrl,
         title: meta.title,
         description: meta.description,
         badges: meta.badges,
@@ -200,7 +201,7 @@ export function InputForm() {
     setLiveTouched(true);
     setGithubTouched(true);
     setError(null);
-    setFallbackMessage(null);
+    setJob(null);
 
     if (!isFormValid(liveUrl, githubUrl)) return;
 
@@ -217,14 +218,17 @@ export function InputForm() {
         ingestRes = await fetch("/api/ingest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ githubUrl: githubUrl.trim() }),
+          body: JSON.stringify({
+            liveUrl: liveUrl.trim(),
+            githubUrl: githubUrl.trim(),
+          }),
           signal: ingestController.signal,
         });
       } catch (err) {
         const name = err && typeof err === "object" ? (err as { name?: string }).name : "";
         if (name === "AbortError") {
           throw new Error(
-            "Reading that repo took too long. Enter a title manually or try again.",
+            "Reading that project took too long. Please try again.",
           );
         }
         throw err;
@@ -240,49 +244,27 @@ export function InputForm() {
       }
 
       const ingest = (await ingestRes.json()) as {
-        status: "ok" | "fallback";
+        status: "ok";
+        source?: "github" | "live";
+        repoStatus?: string;
+        repoUrl?: string;
         message?: string;
-        suggestedTitle?: string;
         title?: string;
         description?: string;
         badges?: string[];
       };
 
-      if (ingest.status === "fallback") {
-        setManualTitle(ingest.suggestedTitle ?? "");
-        setFallbackMessage(
-          ingest.message ?? "Couldn’t read that repo — enter a title to continue.",
-        );
-        setStage("fallback");
-        return;
-      }
-
-      await startAgentJob({
-        title: ingest.title ?? "Untitled project",
-        description: ingest.description ?? "",
-        badges: ingest.badges ?? [],
-      });
+      await startAgentJob(
+        {
+          title: ingest.title ?? "Untitled project",
+          description: ingest.description ?? "",
+          badges: ingest.badges ?? [],
+        },
+        ingest.repoUrl ?? "",
+      );
     } catch (err) {
       setStage("input");
       setError(err instanceof Error ? err.message : "Something went wrong.");
-    }
-  }
-
-  async function continueFromFallback(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!manualTitle.trim()) {
-      setError("Enter a project title to continue.");
-      return;
-    }
-    try {
-      await startAgentJob({
-        title: manualTitle.trim(),
-        description: "",
-        badges: [],
-      });
-    } catch (err) {
-      setStage("fallback");
-      setError(err instanceof Error ? err.message : "Could not start demo.");
     }
   }
 
@@ -292,7 +274,6 @@ export function InputForm() {
     setProjectMeta(null);
     setJob(null);
     setError(null);
-    setFallbackMessage(null);
     setNotifyEnabled(false);
     notifiedRef.current = false;
   }
@@ -329,62 +310,9 @@ export function InputForm() {
         onNotifyChange={setNotifyEnabled}
         error={error}
         onCancel={() =>
-          failWorking("Cancelled. Fix your links and try again.")
+          failWorking("Cancelled. Nothing was published.")
         }
       />,
-    );
-  }
-
-  if (stage === "fallback") {
-    return shell(
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={continueFromFallback}
-        noValidate
-      >
-        <p className="font-heading text-[15px] font-semibold leading-snug text-ink -rotate-1 origin-left">
-          Couldn’t read that repo
-        </p>
-        {fallbackMessage ? (
-          <p className="rounded-xl border-2 border-danger/40 bg-white px-3 py-2 text-sm font-medium text-danger rotate-1">
-            {fallbackMessage}
-          </p>
-        ) : null}
-        <label className="flex flex-col gap-1.5">
-          <span className="font-heading text-sm font-semibold text-ink">
-            Project title
-          </span>
-          <input
-            type="text"
-            name="manualTitle"
-            value={manualTitle}
-            onChange={(e) => {
-              setManualTitle(e.target.value);
-              setError(null);
-            }}
-            placeholder="Name your project"
-            className="stamp-input font-heading text-sm"
-          />
-        </label>
-        <button type="submit" className="stamp-button font-heading -rotate-1">
-          Discover & film tour
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setStage("input");
-            setError(null);
-          }}
-          className="font-heading text-sm font-semibold text-ink/60 underline-offset-2 hover:underline"
-        >
-          Back
-        </button>
-        {error ? (
-          <p role="alert" className="text-center text-sm font-medium text-danger">
-            {error}
-          </p>
-        ) : null}
-      </form>,
     );
   }
 
@@ -423,8 +351,11 @@ export function InputForm() {
       </label>
 
       <label className="flex flex-col gap-1.5">
-        <span className="font-heading text-sm font-semibold text-ink">
-          GitHub repo
+        <span className="flex items-baseline justify-between gap-3 font-heading text-sm font-semibold text-ink">
+          <span>GitHub repo</span>
+          <span className="text-[11px] uppercase tracking-[0.08em] text-accent">
+            Optional
+          </span>
         </span>
         <input
           type="url"
@@ -440,9 +371,20 @@ export function InputForm() {
           }}
           onBlur={() => setGithubTouched(true)}
           aria-invalid={githubError ? true : undefined}
-          aria-describedby={githubError ? "github-url-error" : undefined}
+          aria-describedby={
+            githubError
+              ? "github-recommendation github-url-error"
+              : "github-recommendation"
+          }
           className="stamp-input font-mono text-sm"
         />
+        <span
+          id="github-recommendation"
+          className="text-[12px] font-medium leading-relaxed text-ink/55"
+        >
+          Recommended for the strongest story — a public repo gives DemoBro
+          richer product and stack context.
+        </span>
         {githubError ? (
           <span
             id="github-url-error"
@@ -475,7 +417,14 @@ export function InputForm() {
             {error}
           </p>
           <p className="mt-1 text-[12px] font-medium text-ink/55">
-            Fix the links above and hit Generate demo to try again.
+            {job?.id ? (
+              <>
+                Run reference:{" "}
+                <span className="break-all font-mono">{job.id}</span>
+              </>
+            ) : (
+              "Check the details above and try again."
+            )}
           </p>
         </div>
       ) : null}
