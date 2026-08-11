@@ -1,0 +1,44 @@
+export const MIN_SUCCESSFUL_BEATS = 3;
+export const MIN_BODY_DURATION_MS = 12_000;
+export const MIN_DISTINCT_STATES = 2;
+
+export function estimateBodyDurationMs(steps = []) {
+  return steps
+    .filter((step) => step.status === "succeeded")
+    .reduce((total, step) => {
+      const raw = Math.max(0, Number(step.endMs || 0) - Number(step.startMs || 0));
+      // Renderer retains 250ms of lead and 800ms of trail around each beat.
+      return total + Math.min(6_500, raw + 1_050);
+    }, 0);
+}
+
+export function assessTourQuality(result) {
+  const steps = Array.isArray(result?.steps) ? result.steps : [];
+  const succeeded = steps.filter((step) => step.status === "succeeded");
+  const interactions = succeeded.filter((step) =>
+    ["type", "click", "nav"].includes(step.stepKind),
+  );
+  const distinctStates = new Set(
+    succeeded.map((step) => step.stateFingerprint).filter(Boolean),
+  ).size;
+  const bodyDurationMs = estimateBodyDurationMs(succeeded);
+  const reasons = [];
+  if (succeeded.length < MIN_SUCCESSFUL_BEATS) {
+    reasons.push(`needs ${MIN_SUCCESSFUL_BEATS} successful beats (got ${succeeded.length})`);
+  }
+  if (!interactions.length) reasons.push("needs a real interaction");
+  if (bodyDurationMs < MIN_BODY_DURATION_MS) {
+    reasons.push(`needs ${MIN_BODY_DURATION_MS / 1000}s body footage`);
+  }
+  if (distinctStates < MIN_DISTINCT_STATES) {
+    reasons.push(`needs ${MIN_DISTINCT_STATES} distinct visual states`);
+  }
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    successfulBeats: succeeded.length,
+    interactions: interactions.length,
+    bodyDurationMs,
+    distinctStates,
+  };
+}

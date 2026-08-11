@@ -8,7 +8,7 @@ type Props = {
 };
 
 /**
- * Header brand: real logo badge + DemoBro.video wordmark.
+ * Header brand: real logo badge + DemoBro wordmark.
  * Peel & settle entrance + light hover wiggle (option A).
  * JPG white plate: mix-blend multiply into #FAF9F6.
  */
@@ -52,7 +52,7 @@ export function BrandMark({ className = "" }: Props) {
         aria-hidden
       />
       <span className="whitespace-nowrap">
-        DemoBro
+        Demo
         <motion.span
           className="inline-block text-accent"
           variants={{
@@ -65,7 +65,7 @@ export function BrandMark({ className = "" }: Props) {
                 },
           }}
         >
-          .video
+          Bro
         </motion.span>
       </span>
     </motion.h1>

@@ -20,7 +20,7 @@ export function DownloadScreen({ title, videoUrl, onAnother }: Props) {
         src={videoUrl}
         controls
         playsInline
-        className="w-full rounded-xl border-2 border-ink bg-ink/5 shadow-[4px_4px_0_var(--accent)] -rotate-1"
+        className="aspect-video w-full rounded-xl border-2 border-ink bg-black object-contain shadow-[4px_4px_0_var(--accent)] fullscreen:h-screen fullscreen:w-screen fullscreen:rounded-none fullscreen:border-0 fullscreen:shadow-none"
       />
 
       <a

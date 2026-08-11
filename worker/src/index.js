@@ -5,6 +5,7 @@ import { hostname } from "node:os";
 import { recordStoryboard } from "./record.js";
 import { recordAgentTour } from "./agent-tour.js";
 import { renderDemo } from "./render.js";
+import { assessTourQuality } from "./tour-quality.js";
 import {
   claimNextJob,
   markJobReady,
@@ -85,6 +86,19 @@ async function processJob(job) {
         videoDir = recordResult.videoDir;
         if (!alive) return;
 
+        if (mode === "agent") {
+          const quality = assessTourQuality(recordResult);
+          console.log(
+            `[quality] beats=${quality.successfulBeats} interactions=${quality.interactions}` +
+              ` states=${quality.distinctStates} body=${(quality.bodyDurationMs / 1000).toFixed(1)}s`,
+          );
+          if (!quality.ok) {
+            throw new Error(
+              `Tour quality check failed: ${quality.reasons.join("; ")}.`,
+            );
+          }
+        }
+
         await markJobStatus(job.id, "rendering", "cutting_video");
 
         const finishedPath = path.join(OUTPUT, "final", `${job.id}.mp4`);
@@ -97,6 +111,7 @@ async function processJob(job) {
           liveUrl: job.live_url,
           repoUrl: job.repo_url,
           outputPath: finishedPath,
+          minBodySegments: mode === "agent" ? 3 : 0,
         });
         if (!alive) return;
 
