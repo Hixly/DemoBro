@@ -248,6 +248,9 @@ export function toUserFacingError(err) {
   if (/empty storyboard/i.test(msg)) {
     return "Nothing to film for that job.";
   }
+  if (/rendered video quality check failed/i.test(msg)) {
+    return "The finished video did not pass DemoBro's quality check. Please try again.";
+  }
   // Keep short; never dump stacks / HTML.
   const clipped = msg.slice(0, 180);
   if (clipped.length < 8) return "Something went wrong filming that demo.";

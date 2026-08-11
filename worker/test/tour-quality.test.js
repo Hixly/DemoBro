@@ -20,9 +20,9 @@ test("rejects title-plus-landing style recordings", () => {
 test("accepts a multi-state interactive first-attempt tour", () => {
   const quality = assessTourQuality({
     steps: [
-      step("pause", 0, 3200, "hero"),
-      step("type", 3600, 7000, "filled"),
-      step("click", 7400, 11_900, "result"),
+      step("pause", 0, 3500, "hero"),
+      step("type", 3800, 7800, "filled"),
+      step("click", 8100, 12_600, "result"),
     ],
   });
   assert.equal(quality.ok, true);

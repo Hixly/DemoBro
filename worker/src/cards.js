@@ -145,8 +145,12 @@ function captionCardHtml({ text, fontUrl, position = "bottom" }) {
 </html>`;
 }
 
-function outroCardHtml({ repoUrl, logoUrl }) {
+function outroCardHtml({ title, liveUrl, repoUrl, logoUrl }) {
+  const project = String(title || "this project").trim().slice(0, 64);
+  const live = String(liveUrl || "").replace(/^https?:\/\//, "");
   const repo = String(repoUrl || "").replace(/^https?:\/\//, "");
+  const primary = live || repo;
+  const secondary = live && repo && live !== repo ? repo : "";
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -165,39 +169,78 @@ function outroCardHtml({ repoUrl, logoUrl }) {
       width: 100%; height: 100%;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      padding: 80px; gap: 22px;
+      padding: 72px 110px; gap: 18px;
+    }
+    .eyebrow {
+      margin: 0 0 2px;
+      color: #141414;
+      font-size: 25px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .project {
+      margin: 0;
+      max-width: 1500px;
+      font-size: 82px; font-weight: 700; line-height: 1.05;
+      color: #141414;
+      letter-spacing: -0.02em; text-align: center;
+    }
+    .primary {
+      margin: 8px 0 0;
+      max-width: 1500px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 36px; font-weight: 500; color: #168DD6;
+      text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .repo {
+      margin: 0;
+      max-width: 1350px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 21px; font-weight: 500; color: #5A5A5A;
+      text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rule {
+      width: 180px; height: 3px; margin: 16px 0 4px;
+      border-radius: 999px; background: #141414;
+    }
+    .made {
+      display: flex; align-items: center; gap: 16px;
     }
     .logo {
-      width: 300px; height: 300px; object-fit: contain;
-      margin-bottom: 8px;
+      width: 84px; height: 84px; object-fit: contain;
       /* Near-white JPG bg keyed out in JS before paint */
     }
+    .credit {
+      display: flex; flex-direction: column; align-items: flex-start;
+      gap: 1px;
+    }
+    .built {
+      margin: 0; color: #5A5A5A;
+      font-size: 19px; font-weight: 500;
+    }
     .wordmark {
-      margin: 0;
-      font-size: 64px; font-weight: 700; line-height: 1.1;
-      letter-spacing: -0.02em; text-align: center;
+      margin: 0; font-size: 34px; font-weight: 700; line-height: 1;
+      letter-spacing: -0.02em;
     }
     .wordmark .ink { color: #141414; }
     .wordmark .accent { color: #2BACFC; }
-    .built {
-      margin: 0 0 4px;
-      font-size: 28px; font-weight: 500; color: #5A5A5A;
-      text-align: center;
-    }
-    .repo {
-      margin: 18px 0 0;
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 26px; font-weight: 500; color: #2BACFC;
-      text-align: center;
-    }
   </style>
 </head>
 <body>
   <div class="stage">
-    <img class="logo" src="${logoUrl}" alt="" width="280" height="280" />
-    <p class="built">Built with</p>
-    <p class="wordmark"><span class="ink">DemoBro</span><span class="accent">.video</span></p>
-    <p class="repo">${escapeHtml(repo)}</p>
+    <p class="eyebrow">Keep exploring</p>
+    <h1 class="project">Try ${escapeHtml(project)}</h1>
+    <p class="primary">${escapeHtml(primary)}</p>
+    ${secondary ? `<p class="repo">Source: ${escapeHtml(secondary)}</p>` : ""}
+    <div class="rule"></div>
+    <div class="made">
+      <img class="logo" src="${logoUrl}" alt="" width="84" height="84" />
+      <div class="credit">
+        <p class="built">Made with</p>
+        <p class="wordmark"><span class="ink">Demo</span><span class="accent">Bro</span></p>
+      </div>
+    </div>
   </div>
 </body>
 </html>`;

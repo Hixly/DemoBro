@@ -2,13 +2,21 @@ export const MIN_SUCCESSFUL_BEATS = 3;
 export const MIN_BODY_DURATION_MS = 12_000;
 export const MIN_DISTINCT_STATES = 2;
 
+const RENDERED_BEAT_LIMIT_MS = {
+  pause: 4_000,
+  nav: 4_100,
+  type: 4_200,
+  click: 4_300,
+};
+
 export function estimateBodyDurationMs(steps = []) {
   return steps
     .filter((step) => step.status === "succeeded")
     .reduce((total, step) => {
       const raw = Math.max(0, Number(step.endMs || 0) - Number(step.startMs || 0));
-      // Renderer retains 250ms of lead and 800ms of trail around each beat.
-      return total + Math.min(6_500, raw + 1_050);
+      const ceiling = RENDERED_BEAT_LIMIT_MS[step.stepKind] || 4_200;
+      // Mirrors the renderer's concise lead/trail window and per-kind ceiling.
+      return total + Math.min(ceiling, raw + 450);
     }, 0);
 }
 
