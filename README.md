@@ -135,6 +135,7 @@ Open [http://localhost:3000](http://localhost:3000). The worker's development co
 | `npm run build` | Create a production Next.js build |
 | `npm run check` | Run lint, tests, and production build |
 | `npm run brand:logo` | Regenerate the transparent web logo from the source asset |
+| `npm run brand:favicon` | Regenerate the browser favicon from the DemoBro play logo |
 
 ## Deployment
 
