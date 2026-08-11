@@ -1,0 +1,8 @@
+{
+  "date": "2026-08-11",
+  "framework": "Next.js 15 App Router",
+  "fonts": ["Fredoka", "IBM Plex Mono"],
+  "palette": "DemoBro warm paper, ink, and sky blue",
+  "motion": "Framer Motion installed; beta gate uses CSS motion",
+  "spacing": "4px-based existing scale"
+}

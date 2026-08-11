@@ -1,0 +1,34 @@
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R4 V5 */
+/* DemoBro private beta design tokens */
+:root {
+  --color-beta-paper: oklch(98% 0.008 82);
+  --color-beta-surface: oklch(99% 0.006 82);
+  --color-beta-ink: oklch(18% 0.012 255);
+  --color-beta-muted: oklch(50% 0.018 255);
+  --color-beta-blue: oklch(72% 0.17 240);
+  --color-beta-accent-ink: oklch(18% 0.012 255);
+  --color-beta-blue-soft: oklch(91% 0.065 235);
+  --color-beta-danger: oklch(53% 0.2 28);
+  --color-beta-success: oklch(57% 0.14 152);
+  --color-beta-focus: oklch(55% 0.19 245);
+  --font-beta-display: var(--font-fredoka);
+  --font-beta-mono: var(--font-plex-mono);
+  --space-beta-xs: 0.25rem;
+  --space-beta-sm: 0.5rem;
+  --space-beta-md: 1rem;
+  --space-beta-lg: 1.5rem;
+  --space-beta-xl: 2rem;
+  --space-beta-2xl: 3rem;
+  --text-beta-small: 0.78rem;
+  --text-beta-body: 1rem;
+  --text-beta-title: clamp(2rem, 5vw, 3.75rem);
+  --ease-beta-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-beta-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-beta-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-beta-fast: 120ms;
+  --dur-beta-medium: 360ms;
+  --dur-beta-register: 900ms;
+  --rule-beta: 2px;
+  --radius-beta-input: 0.7rem;
+  --radius-beta-card: 1.2rem;
+}

@@ -1,0 +1,513 @@
+/* Hallmark · macrostructure: Split Studio · genre: playful · theme: DemoBro custom · enrichment: tier-A CSS registration rig · contrast: pass (40–41) · mobile: pass (34, 49, 50–57) */
+.page {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  overflow-x: clip;
+  padding: var(--space-beta-lg);
+  background: var(--color-beta-paper);
+  color: var(--color-beta-ink);
+  font-family: var(--font-beta-display), system-ui, sans-serif;
+}
+
+.stage {
+  width: min(70rem, 100%);
+  min-height: min(43rem, calc(100svh - 3rem));
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  align-items: stretch;
+  gap: clamp(var(--space-beta-xl), 6vw, 5rem);
+}
+
+.logoHalf,
+.formHalf {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+}
+
+.logoHalf {
+  position: relative;
+  align-content: center;
+  padding: var(--space-beta-2xl) var(--space-beta-md);
+}
+
+.registrationRig {
+  position: relative;
+  width: min(100%, 34rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(var(--space-beta-sm), 2vw, var(--space-beta-md));
+  padding: clamp(2.5rem, 8vw, 5.5rem) clamp(var(--space-beta-lg), 4vw, 3rem);
+  isolation: isolate;
+}
+
+.registrationRig::before {
+  content: "";
+  position: absolute;
+  inset: 10% 2% 8% 4%;
+  z-index: -2;
+  border: var(--rule-beta) solid var(--color-beta-ink);
+  border-radius: 48% 52% 46% 54% / 52% 44% 56% 48%;
+  transform: rotate(-2deg);
+  background: var(--color-beta-surface);
+  box-shadow: 10px 11px 0 var(--color-beta-blue);
+}
+
+.registrationRig::after {
+  content: "";
+  position: absolute;
+  inset: 16% -1% 3% 10%;
+  z-index: -3;
+  border: var(--rule-beta) dashed var(--color-beta-blue);
+  border-radius: 52% 48% 55% 45% / 43% 57% 45% 55%;
+  transform: rotate(3deg);
+  opacity: 0.7;
+}
+
+.reelBadge {
+  width: clamp(3.4rem, 8vw, 5.75rem);
+  aspect-ratio: 1;
+  flex: 0 0 auto;
+  transform-origin: center;
+  animation: reelRegister 7s var(--ease-beta-in-out) infinite;
+}
+
+.reelBadge img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  filter: contrast(1.08);
+}
+
+.wordmark {
+  position: relative;
+  min-width: 0;
+  font-size: clamp(2.75rem, 7.2vw, 5.75rem);
+  font-weight: 700;
+  line-height: 0.92;
+  letter-spacing: -0.055em;
+  white-space: nowrap;
+}
+
+.liveWord,
+.ghostInk,
+.ghostBlue {
+  display: block;
+  transform-origin: 48% 58%;
+}
+
+.liveWord {
+  position: relative;
+  z-index: 3;
+  animation: liveRegister 7s var(--ease-beta-out) infinite;
+}
+
+.liveWord span {
+  color: var(--color-beta-blue);
+}
+
+.ghostInk,
+.ghostBlue {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.ghostInk {
+  z-index: 1;
+  color: var(--color-beta-ink);
+  opacity: 0;
+  animation: inkSlip 7s var(--ease-beta-out) infinite;
+}
+
+.ghostBlue {
+  z-index: 2;
+  color: var(--color-beta-blue);
+  opacity: 0;
+  animation: blueSlip 7s var(--ease-beta-out) infinite;
+}
+
+.registrationLine {
+  position: absolute;
+  left: 13%;
+  right: 7%;
+  bottom: 21%;
+  height: var(--rule-beta);
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: var(--color-beta-blue);
+  animation: registrationSweep 7s var(--ease-beta-out) infinite;
+}
+
+.cornerA,
+.cornerB {
+  position: absolute;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-color: var(--color-beta-blue);
+  opacity: 0;
+  animation: cornerBlink 7s var(--ease-beta-in-out) infinite;
+}
+
+.cornerA {
+  top: 14%;
+  left: 8%;
+  border-top: var(--rule-beta) solid;
+  border-left: var(--rule-beta) solid;
+}
+
+.cornerB {
+  right: 5%;
+  bottom: 12%;
+  border-right: var(--rule-beta) solid;
+  border-bottom: var(--rule-beta) solid;
+}
+
+.productionNote {
+  margin: calc(var(--space-beta-md) * -1) 0 0;
+  font-family: var(--font-beta-mono), ui-monospace, monospace;
+  font-size: var(--text-beta-small);
+  color: var(--color-beta-muted);
+  letter-spacing: 0.045em;
+  text-align: center;
+}
+
+.formHalf {
+  padding: var(--space-beta-2xl) 0;
+}
+
+.card {
+  position: relative;
+  width: min(100%, 29rem);
+  padding: clamp(var(--space-beta-lg), 5vw, var(--space-beta-2xl));
+  border: calc(var(--rule-beta) + 0.5px) solid var(--color-beta-ink);
+  border-radius: var(--radius-beta-card);
+  background: var(--color-beta-surface);
+  box-shadow: 8px 9px 0 var(--color-beta-blue);
+  transform: rotate(0.75deg);
+  animation: cardArrive var(--dur-beta-register) var(--ease-beta-out) both;
+}
+
+.tape {
+  position: absolute;
+  top: -0.65rem;
+  right: 2.25rem;
+  width: 4.8rem;
+  height: 1.35rem;
+  background: var(--color-beta-blue-soft);
+  opacity: 0.88;
+  transform: rotate(-5deg);
+  clip-path: polygon(4% 5%, 96% 0, 100% 88%, 8% 100%, 0 24%);
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-beta-md);
+  font-family: var(--font-beta-mono), ui-monospace, monospace;
+  font-size: var(--text-beta-small);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-beta-muted);
+}
+
+.card h1 {
+  margin: 0;
+  max-width: 11ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-beta-title);
+  font-style: normal;
+  font-weight: 650;
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+}
+
+.intro {
+  margin: var(--space-beta-lg) 0 var(--space-beta-xl);
+  max-width: 45ch;
+  color: var(--color-beta-muted);
+  font-size: var(--text-beta-body);
+  line-height: 1.5;
+}
+
+.label {
+  display: block;
+  margin-bottom: var(--space-beta-sm);
+  font-weight: 650;
+}
+
+.input {
+  width: 100%;
+  min-height: 3.25rem;
+  border: var(--rule-beta) solid var(--color-beta-ink);
+  border-radius: var(--radius-beta-input);
+  background: var(--color-beta-paper);
+  padding: 0.8rem 0.9rem;
+  color: var(--color-beta-ink);
+  font-family: var(--font-beta-mono), ui-monospace, monospace;
+  font-size: var(--text-beta-body);
+  outline: none;
+  transition:
+    transform var(--dur-beta-fast) var(--ease-beta-out),
+    box-shadow var(--dur-beta-fast) var(--ease-beta-out),
+    opacity var(--dur-beta-fast) var(--ease-beta-out);
+}
+
+.input::placeholder {
+  color: var(--color-beta-muted);
+  opacity: 0.72;
+}
+
+.input:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.input:focus-visible {
+  outline: var(--rule-beta) solid var(--color-beta-focus);
+  outline-offset: 3px;
+  box-shadow: 4px 4px 0 var(--color-beta-blue);
+}
+
+.input:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--color-beta-danger);
+  box-shadow: 3px 3px 0 var(--color-beta-danger);
+}
+
+.button {
+  width: 100%;
+  min-height: 3.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-beta-md);
+  margin-top: var(--space-beta-md);
+  border: var(--rule-beta) solid var(--color-beta-ink);
+  border-radius: var(--radius-beta-input);
+  background: var(--color-beta-blue);
+  padding: 0.78rem 0.95rem;
+  color: var(--color-beta-accent-ink);
+  font-family: var(--font-beta-display), system-ui, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 650;
+  box-shadow: 4px 4px 0 var(--color-beta-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform var(--dur-beta-fast) var(--ease-beta-out),
+    box-shadow var(--dur-beta-fast) var(--ease-beta-out),
+    opacity var(--dur-beta-fast) var(--ease-beta-out);
+}
+
+.buttonMark {
+  display: inline-grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: 0 0 auto;
+  border: var(--rule-beta) solid var(--color-beta-ink);
+  border-radius: 50%;
+  background: var(--color-beta-surface);
+  font-size: 0.68rem;
+  transition: transform var(--dur-beta-medium) var(--ease-beta-out);
+}
+
+@media (hover: hover) {
+  .button:hover:not(:disabled) {
+    transform: translate(-1px, -1px);
+  }
+}
+
+.button:focus-visible {
+  outline: var(--rule-beta) solid var(--color-beta-focus);
+  outline-offset: 3px;
+}
+
+.button:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 1px 1px 0 var(--color-beta-ink);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.button[data-state="loading"] .buttonMark {
+  animation: buttonReel 700ms var(--ease-beta-in-out) infinite;
+}
+
+.button[data-state="success"] {
+  background: color-mix(in oklch, var(--color-beta-success) 28%, var(--color-beta-surface));
+}
+
+.card[data-state="error"] .button {
+  box-shadow: 4px 4px 0 var(--color-beta-danger);
+}
+
+.helper {
+  min-height: 2.6em;
+  margin: var(--space-beta-md) 0 0;
+  font-family: var(--font-beta-mono), ui-monospace, monospace;
+  font-size: var(--text-beta-small);
+  line-height: 1.45;
+  color: var(--color-beta-muted);
+}
+
+.card[data-state="error"] .helper {
+  color: var(--color-beta-danger);
+}
+
+.card[data-state="success"] .helper {
+  color: var(--color-beta-success);
+}
+
+@keyframes cardArrive {
+  from { opacity: 0; transform: translate(1.25rem, 0.75rem) rotate(2deg); }
+  to { opacity: 1; transform: translate(0, 0) rotate(0.75deg); }
+}
+
+@keyframes reelRegister {
+  0%, 7% { opacity: 0; transform: translate(-1.4rem, 0.5rem) rotate(-110deg) scale(0.82); }
+  16%, 82% { opacity: 1; transform: translate(0, 0) rotate(0deg) scale(1); }
+  86% { transform: translate(0, 0) rotate(-8deg) scale(1); }
+  91% { transform: translate(0, 0) rotate(8deg) scale(1); }
+  96%, 100% { opacity: 1; transform: translate(0, 0) rotate(0deg) scale(1); }
+}
+
+@keyframes liveRegister {
+  0%, 8% { opacity: 0; transform: translate(0.5rem, -0.35rem) rotate(1deg); }
+  18%, 82% { opacity: 1; transform: translate(0, 0) rotate(0deg); }
+  86% { transform: translate(-0.08rem, 0.03rem) rotate(-0.25deg); }
+  94%, 100% { opacity: 1; transform: translate(0, 0) rotate(0deg); }
+}
+
+@keyframes inkSlip {
+  0%, 7% { opacity: 0; transform: translate(-1.2rem, 0.7rem) rotate(-1deg); }
+  10% { opacity: 0.28; }
+  18%, 82% { opacity: 0; transform: translate(0, 0) rotate(0deg); }
+  86% { opacity: 0.22; transform: translate(-0.16rem, 0.08rem); }
+  94%, 100% { opacity: 0; transform: translate(0, 0); }
+}
+
+@keyframes blueSlip {
+  0%, 7% { opacity: 0; transform: translate(1.4rem, -0.7rem) rotate(1.5deg); }
+  10% { opacity: 0.55; }
+  18%, 82% { opacity: 0; transform: translate(0, 0) rotate(0deg); }
+  86% { opacity: 0.55; transform: translate(0.18rem, -0.08rem); }
+  94%, 100% { opacity: 0; transform: translate(0, 0); }
+}
+
+@keyframes registrationSweep {
+  0%, 9% { opacity: 0; transform: scaleX(0); }
+  12% { opacity: 1; }
+  20% { opacity: 1; transform: scaleX(1); }
+  27%, 100% { opacity: 0; transform: scaleX(1); }
+}
+
+@keyframes cornerBlink {
+  0%, 9% { opacity: 0; transform: scale(0.6); }
+  14%, 19% { opacity: 1; transform: scale(1); }
+  24%, 84% { opacity: 0; transform: scale(1); }
+  87%, 91% { opacity: 0.8; transform: scale(1); }
+  95%, 100% { opacity: 0; transform: scale(1); }
+}
+
+@keyframes buttonReel {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 56rem) {
+  .stage {
+    min-height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .logoHalf {
+    padding: var(--space-beta-lg) var(--space-beta-sm) var(--space-beta-md);
+  }
+
+  .registrationRig {
+    width: min(100%, 31rem);
+    padding-block: 3.5rem;
+  }
+
+  .productionNote {
+    margin-top: 0;
+  }
+
+  .formHalf {
+    padding: var(--space-beta-xl) 0 var(--space-beta-lg);
+  }
+}
+
+@media (max-width: 30rem) {
+  .page {
+    padding: var(--space-beta-md);
+  }
+
+  .registrationRig {
+    padding: 2.7rem var(--space-beta-md);
+  }
+
+  .wordmark {
+    font-size: clamp(2.45rem, 13vw, 3.6rem);
+  }
+
+  .reelBadge {
+    width: clamp(3rem, 15vw, 4rem);
+  }
+
+  .card {
+    padding: var(--space-beta-lg);
+    box-shadow: 6px 7px 0 var(--color-beta-blue);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .reelBadge,
+  .liveWord,
+  .ghostInk,
+  .ghostBlue,
+  .registrationLine,
+  .cornerA,
+  .cornerB,
+  .button[data-state="loading"] .buttonMark {
+    animation: none;
+  }
+
+  .ghostInk,
+  .ghostBlue,
+  .registrationLine,
+  .cornerA,
+  .cornerB {
+    opacity: 0;
+  }
+
+  .card,
+  .reelBadge,
+  .liveWord {
+    opacity: 1;
+    transform: none;
+  }
+
+  .input,
+  .button,
+  .buttonMark {
+    transition-duration: var(--dur-beta-fast);
+  }
+}

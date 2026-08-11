@@ -16,7 +16,7 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DemoBro.video",
+  title: "DemoBro",
   description:
     "Generate a polished ~30-second demo video of your web app — no screen recording.",
 };
