@@ -1,12 +1,26 @@
 {
   "name": "demobro",
   "version": "0.1.0",
+  "description": "Generate polished micro-demo videos from a public web app and GitHub repository.",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://www.demobro.video",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hixly/DemoBro.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev --turbopack",
+    "dev:worker": "npm run dev --prefix worker",
+    "dev:cron": "npm run dev --prefix cron",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
+    "test": "npm test --prefix worker",
+    "check": "npm run lint && npm run test && npm run build",
     "brand:logo": "python scripts/make-logo-transparent.py"
   },
   "dependencies": {

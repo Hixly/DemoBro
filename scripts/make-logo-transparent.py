@@ -141,7 +141,7 @@ def main() -> None:
     parser.add_argument(
         "--src",
         type=Path,
-        default=root / "public" / "brand" / "demobro-logo.jpg",
+        default=root / "worker" / "assets" / "demobro-logo.jpg",
     )
     parser.add_argument(
         "--dst",

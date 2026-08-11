@@ -37,7 +37,6 @@ const FADE_OUT = 0.4;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGO_CANDIDATES = [
   path.resolve(__dirname, "../assets/demobro-logo.jpg"),
-  path.resolve(__dirname, "../../public/brand/demobro-logo.jpg"),
 ];
 const CLICK_RING_PNG = path.resolve(__dirname, "../assets/click-ring.png");
 const CURSOR_PNG = path.resolve(__dirname, "../assets/cursor.png");
@@ -624,7 +623,7 @@ function buildSpotlightFilter(box, untilSec = 0.65) {
 /**
  * Soft post-zoom vignette — very light; heavy vignette reads as blur/ghosting.
  */
-function buildVignetteFilter(_box) {
+function buildVignetteFilter() {
   // Disabled — vignette + zoompan read as muddy blur on screen demos.
   return "";
 }
@@ -829,7 +828,6 @@ async function muxVideoAudio(videoPath, audioPath, outPath, outDur) {
 async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const dur = Math.max(0.2, seg.end - seg.start);
   const outDur = dur / speed;
-  const fadeOutStart = Math.max(0, outDur - 0.25);
   const outDurS = outDur.toFixed(3);
   const zoom = buildZoomFilter(
     seg.box ?? null,
@@ -846,7 +844,7 @@ async function extractSegment(rawPath, seg, outPath, speed = 1) {
   const spotlight = seg.stepKind === "pause" || isWideBottomCta(seg.box)
     ? ""
     : buildSpotlightFilter(seg.box ?? null, spotUntil);
-  const vignette = buildVignetteFilter(seg.box ?? null);
+  const vignette = buildVignetteFilter();
 
   const tmpDir = path.dirname(outPath);
   const stem = path.basename(outPath, ".mp4");
