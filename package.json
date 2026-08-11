@@ -22,6 +22,7 @@
     "test": "npm test --prefix worker",
     "check": "npm run lint && npm run test && npm run build",
     "brand:logo": "python scripts/make-logo-transparent.py",
+    "brand:favicon": "python scripts/make-favicon.py",
     "brand:social-card": "node worker/scripts/render-social-card.mjs"
   },
   "dependencies": {
